@@ -1,0 +1,5 @@
+export default {
+  name: "beyond-bullet-points",
+  main: "party/index.ts",
+  compatibilityDate: "2024-03-15",
+};

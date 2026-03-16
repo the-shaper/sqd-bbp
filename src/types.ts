@@ -1,4 +1,4 @@
-export type Section = 'place' | 'role' | 'challenge' | 'point_a' | 'point_b' | 'change';
+export type Section = 'place' | 'role' | 'challenge' | 'point_a' | 'point_b' | 'change' | 'story';
 
 export interface CardData {
   id: string;
@@ -6,6 +6,7 @@ export interface CardData {
   content: string;
   starred: boolean;
   notes?: string;
+  order?: number;
 }
 
 export interface Project {

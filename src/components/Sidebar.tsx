@@ -1,40 +1,248 @@
-import React from 'react';
-import { ChevronDown, Cpu } from 'lucide-react';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import { ChevronDown, Cpu, Plus, Trash2, FolderOpen, Lock, Unlock, Download, LogOut, Shield } from 'lucide-react';
 import { ModelType } from '../services/ai';
+
+interface Session {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  project_client?: string;
+  project_background?: string;
+  project_notes?: string;
+  onboarding_completed?: boolean;
+  has_password?: boolean;
+}
 
 interface SidebarProps {
   onViewChange: (view: 'new' | 'canvas') => void;
   currentView: 'new' | 'canvas';
   selectedModel: ModelType;
   onModelChange: (model: ModelType) => void;
+  sessions?: Session[];
+  currentSession?: Session | null;
+  isEditMode?: boolean;
+  isAdmin?: boolean;
+  onCreateSession?: (name: string, requirePassword: boolean) => Promise<void>;
+  onDeleteSession?: (sessionId: string) => Promise<void>;
+  onLoadSession?: (sessionId: string) => void;
+  onExportSession?: (format: 'zip' | 'markdown' | 'json') => void;
+  onLogout?: () => void;
+  onEditRequest?: () => void;
 }
 
-export default function Sidebar({ onViewChange, currentView, selectedModel, onModelChange }: SidebarProps) {
+export default function Sidebar({ 
+  onViewChange, 
+  currentView, 
+  selectedModel, 
+  onModelChange,
+  sessions = [],
+  currentSession,
+  isEditMode,
+  isAdmin,
+  onCreateSession,
+  onDeleteSession,
+  onLoadSession,
+  onExportSession,
+  onLogout,
+  onEditRequest
+}: SidebarProps) {
+  const [isCreating, setIsCreating] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
+  const [requirePassword, setRequirePassword] = useState(false);
+
+  const handleCreateSession = async () => {
+    if (!newSessionName.trim() || !onCreateSession) return;
+    
+    setIsCreating(true);
+    try {
+      await onCreateSession(newSessionName, requirePassword);
+      setNewSessionName('');
+      setRequirePassword(false);
+    } catch (error) {
+      console.error('Failed to create session:', error);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    if (onDeleteSession && confirm('Are you sure you want to delete this session?')) {
+      await onDeleteSession(sessionId);
+    }
+  };
+
+  const handleSessionClick = (sessionId: string) => {
+    if (onLoadSession) {
+      onLoadSession(sessionId);
+    }
+  };
+
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col shrink-0">
+    <div className="w-72 bg-white border-r border-gray-200 flex flex-col shrink-0">
       <div className="h-16 flex items-center px-6 border-b border-gray-200 font-bold text-xl tracking-tight">
         SQD+BDO
       </div>
-      <div className="flex-1 overflow-y-auto py-4 flex flex-col">
-        <div className="px-4 py-2 flex items-center justify-between font-semibold border-b border-gray-100 cursor-pointer hover:bg-gray-50">
-          Projects <ChevronDown size={16} />
-        </div>
-        <div className="px-4 py-2 flex items-center justify-between font-semibold bg-indigo-50 text-indigo-900 border-b border-gray-100 cursor-pointer">
-          Workshops <ChevronDown size={16} />
-        </div>
-        <div className="bg-gray-50 py-2">
-          <div className="px-8 py-1.5 text-sm font-medium text-gray-900">Beyond BulletPoints</div>
-          <div className="px-8 py-1.5 text-sm text-gray-600 hover:bg-gray-100 cursor-pointer">Introduction</div>
-          <div className="px-8 py-1.5 text-sm text-gray-600 hover:bg-gray-100 cursor-pointer">Open Recent</div>
-          <div 
-            className={`px-8 py-1.5 text-sm cursor-pointer ${currentView === 'new' ? 'bg-cyan-50 text-cyan-900 font-medium' : 'text-gray-600 hover:bg-gray-100'}`}
-            onClick={() => onViewChange('new')}
-          >
-            New Project
+
+      <div className="flex-1 overflow-y-auto flex flex-col">
+        {/* Admin-only: Session Management Section */}
+        {isAdmin && (
+          <div className="border-b-2 border-indigo-100 bg-indigo-50/50">
+            <div className="px-4 py-3 flex items-center justify-between font-semibold text-indigo-900">
+              <div className="flex items-center gap-2">
+                <Shield size={18} />
+                Admin
+              </div>
+              <span className="text-xs font-normal text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-full">
+                {sessions.length}
+              </span>
+            </div>
+            
+            {/* Create New Session */}
+            <div className="px-4 pb-3">
+              <div className="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  value={newSessionName}
+                  onChange={(e) => setNewSessionName(e.target.value)}
+                  placeholder="New session name..."
+                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreateSession()}
+                />
+                <button
+                  onClick={handleCreateSession}
+                  disabled={isCreating || !newSessionName.trim()}
+                  className="px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+              
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={requirePassword}
+                  onChange={(e) => setRequirePassword(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                />
+                Require password for players
+              </label>
+            </div>
+
+            {/* Session List */}
+            <div className="px-2 pb-2 max-h-48 overflow-y-auto">
+              {sessions.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-gray-500 italic">
+                  No sessions yet. Create one above.
+                </div>
+              ) : (
+                sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    onClick={() => handleSessionClick(session.id)}
+                    className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm mb-1 transition-colors ${
+                      currentSession?.id === session.id
+                        ? 'bg-indigo-100 text-indigo-900'
+                        : 'hover:bg-white text-gray-700'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate">{session.name}</div>
+                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                        <span className="font-mono">{session.id}</span>
+                        {session.has_password && <Lock size={10} />}
+                        {session.onboarding_completed && <span>✓</span>}
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onExportSession) onExportSession('zip');
+                        }}
+                        className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded"
+                        title="Export"
+                      >
+                        <Download size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteSession(e, session.id)}
+                        className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-100 rounded"
+                        title="Delete"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Current Session Info (for players) */}
+        {!isAdmin && currentSession && (
+          <div className="border-b-2 border-gray-100 bg-gray-50 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-gray-500 uppercase">Current Session</span>
+              {currentSession.has_password ? (
+                <Lock size={14} className="text-gray-400" />
+              ) : (
+                <Unlock size={14} className="text-green-500" />
+              )}
+            </div>
+            <div className="font-semibold text-gray-900">{currentSession.name}</div>
+            <div className="text-xs text-gray-500 font-mono">{currentSession.id}</div>
+            
+            {!isEditMode && onEditRequest && (
+              <button
+                onClick={onEditRequest}
+                className="mt-3 w-full px-3 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
+              >
+                <Unlock size={14} />
+                {currentSession.has_password ? 'Enter Password to Edit' : 'Start Editing'}
+              </button>
+            )}
+            
+            {isEditMode && (
+              <div className="mt-3 px-3 py-2 bg-green-100 text-green-800 text-sm rounded-lg flex items-center justify-center gap-2">
+                <Unlock size={14} />
+                Editing Enabled
+              </div>
+            )}
+          </div>
+        )}
+        
+        {/* ORIGINAL NAVIGATION */}
+        <div className="py-4 flex-1">
+          <div className="px-4 py-2 flex items-center justify-between font-semibold border-b border-gray-100 cursor-pointer hover:bg-gray-50">
+            Projects <ChevronDown size={16} />
+          </div>
+          <div className="px-4 py-2 flex items-center justify-between font-semibold bg-indigo-50 text-indigo-900 border-b border-gray-100 cursor-pointer">
+            Workshops <ChevronDown size={16} />
+          </div>
+          <div className="bg-gray-50 py-2">
+            <div className="px-8 py-1.5 text-sm font-medium text-gray-900">Beyond BulletPoints</div>
+            <div className="px-8 py-1.5 text-sm text-gray-600 hover:bg-gray-100 cursor-pointer">Introduction</div>
+            <div className="px-8 py-1.5 text-sm text-gray-600 hover:bg-gray-100 cursor-pointer">Open Recent</div>
+            <div 
+              className={`px-8 py-1.5 text-sm cursor-pointer ${currentView === 'new' ? 'bg-cyan-50 text-cyan-900 font-medium' : 'text-gray-600 hover:bg-gray-100'}`}
+              onClick={() => onViewChange('new')}
+            >
+              New Project
+            </div>
           </div>
         </div>
         
-        <div className="mt-auto px-4 py-4 border-t border-gray-200">
+        {/* AI Model Selector */}
+        <div className="px-4 py-4 border-t border-gray-200">
           <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
             <Cpu size={14} /> AI Model
           </div>
@@ -53,6 +261,19 @@ export default function Sidebar({ onViewChange, currentView, selectedModel, onMo
             </div>
           </div>
         </div>
+
+        {/* Logout button (admin only) */}
+        {isAdmin && onLogout && (
+          <div className="px-4 py-4 border-t border-gray-200">
+            <button
+              onClick={onLogout}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              <LogOut size={16} />
+              Logout
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

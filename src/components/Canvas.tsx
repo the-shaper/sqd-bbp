@@ -14,6 +14,17 @@ interface CanvasProps {
   projectData: { client: string; background: string; notes: string };
   showToast: (msg: string) => void;
   selectedModel: ModelType;
+  isEditMode?: boolean;
+  currentSession?: { id: string; name: string } | null;
+  onEditRequest?: () => void;
+  onCardUpdate?: (cardId: string, updates: Partial<CardData>) => Promise<void>;
+  onCardAdd?: (card: Omit<CardData, 'id'>) => Promise<string | undefined>;
+  onCursorMove?: (x: number, y: number) => void;
+  connections?: Array<{ id: string; from: string; to: string }>;
+  onCardDelete?: (cardId: string) => Promise<void>;
+  onCardReorder?: (section: string, cardIds: string[]) => Promise<void>;
+  onConnectionCreate?: (from: string, to: string) => Promise<void>;
+  onConnectionDelete?: (connectionId: string) => Promise<void>;
 }
 
 interface ConnectionLineProps {
@@ -77,16 +88,19 @@ const ConnectionLine: React.FC<ConnectionLineProps> = ({ startId, endId, isDrawi
   );
 }
 
-export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel }: CanvasProps) {
+export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel, isEditMode, currentSession, onEditRequest, onCardUpdate, onCardAdd, onCursorMove, connections = [], onCardDelete, onCardReorder, onConnectionCreate, onConnectionDelete }: CanvasProps) {
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
   const [dragOverColId, setDragOverColId] = useState<string | null>(null);
 
-  const [connections, setConnections] = useState<{ id: string, from: string, to: string }[]>([]);
   const [drawingLine, setDrawingLine] = useState<{ startNodeId: string, endX: number, endY: number, startX: number, startY: number } | null>(null);
 
   const [generatingCards, setGeneratingCards] = useState<Record<string, boolean>>({});
   const [generatingStory, setGeneratingStory] = useState(false);
+  
+  // Track which card is being edited inline
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
 
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
@@ -108,10 +122,9 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
           const toCardId = el.id.replace('node-left-', '');
           const fromCardId = drawingLine.startNodeId.replace('node-right-', '');
           if (fromCardId !== toCardId) {
-            setConnections(prev => {
-              if (prev.some(c => c.from === fromCardId && c.to === toCardId)) return prev;
-              return [...prev, { id: `${fromCardId}-${toCardId}`, from: fromCardId, to: toCardId }];
-            });
+            if (!connections.some(c => c.from === fromCardId && c.to === toCardId)) {
+              onConnectionCreate?.(fromCardId, toCardId);
+            }
             connected = true;
           }
         }
@@ -123,7 +136,6 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
 
         const dist = Math.hypot(e.clientX - drawingLine.startX, e.clientY - drawingLine.startY);
         if (dist < 10 && el && el.id === drawingLine.startNodeId) {
-          // It was a click on the start node. Keep drawing mode active.
           return;
         }
 
@@ -142,6 +154,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   }, [drawingLine]);
 
   const handleDragStart = (e: React.DragEvent, cardId: string) => {
+    if (!isEditMode) return;
     setDraggedCardId(cardId);
     e.dataTransfer.effectAllowed = 'move';
   };
@@ -149,7 +162,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   const handleDragOverCard = (e: React.DragEvent, targetCardId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    if (draggedCardId && draggedCardId !== targetCardId) {
+    if (draggedCardId && draggedCardId !== targetCardId && isEditMode) {
       setDragOverCardId(targetCardId);
       setDragOverColId(null);
     }
@@ -160,7 +173,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     e.stopPropagation();
     setDragOverCardId(null);
     setDragOverColId(null);
-    if (!draggedCardId || draggedCardId === targetCardId) return;
+    if (!draggedCardId || draggedCardId === targetCardId || !isEditMode) return;
 
     const newCards = [...cards];
     const sourceIndex = newCards.findIndex(c => c.id === draggedCardId);
@@ -168,16 +181,25 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     
     if (sourceIndex > -1 && targetIndex > -1) {
       const [movedCard] = newCards.splice(sourceIndex, 1);
+      const sectionChanged = movedCard.section !== colId;
       movedCard.section = colId as any;
       newCards.splice(targetIndex, 0, movedCard);
       setCards(newCards);
+
+      if (sectionChanged && onCardUpdate) {
+        onCardUpdate(movedCard.id, { section: colId as any });
+      }
+      if (onCardReorder) {
+        const sectionCards = newCards.filter(c => c.section === colId);
+        onCardReorder(colId, sectionCards.map(c => c.id));
+      }
     }
     setDraggedCardId(null);
   };
 
   const handleDragOverCol = (e: React.DragEvent, colId: string) => {
     e.preventDefault();
-    if (draggedCardId) {
+    if (draggedCardId && isEditMode) {
       setDragOverColId(colId);
       setDragOverCardId(null);
     }
@@ -187,16 +209,25 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     e.preventDefault();
     setDragOverColId(null);
     setDragOverCardId(null);
-    if (!draggedCardId) return;
+    if (!draggedCardId || !isEditMode) return;
 
     const newCards = [...cards];
     const sourceIndex = newCards.findIndex(c => c.id === draggedCardId);
     
     if (sourceIndex > -1) {
       const [movedCard] = newCards.splice(sourceIndex, 1);
+      const sectionChanged = movedCard.section !== colId;
       movedCard.section = colId as any;
       newCards.push(movedCard);
       setCards(newCards);
+
+      if (sectionChanged && onCardUpdate) {
+        onCardUpdate(movedCard.id, { section: colId as any });
+      }
+      if (onCardReorder) {
+        const sectionCards = newCards.filter(c => c.section === colId);
+        onCardReorder(colId, sectionCards.map(c => c.id));
+      }
     }
     setDraggedCardId(null);
   };
@@ -207,21 +238,91 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     setDragOverColId(null);
   };
 
-  const handleAddCard = (colId: string) => {
-    const newCard: CardData = {
-      id: `card-${Date.now()}`,
+  const handleAddCard = async (colId: string) => {
+    if (!isEditMode) {
+      showToast('Enter password to add cards');
+      return;
+    }
+    
+    // Get the next index for this section
+    const sectionCards = cards.filter(c => c.section === colId);
+    const nextIndex = sectionCards.length;
+    
+    const newCardData = {
       section: colId as any,
       content: '',
-      starred: false
+      starred: false,
+      order: nextIndex
     };
-    setCards([...cards, newCard]);
+    
+    // Call API to create card if callback provided
+    if (onCardAdd) {
+      try {
+        const cardId = await onCardAdd(newCardData);
+        if (cardId) {
+          setEditingCardId(cardId);
+          setEditContent('');
+        }
+      } catch (error) {
+        console.error('Error creating card:', error);
+        showToast('Failed to create card');
+      }
+    } else {
+      // Fallback to local state only
+      const newCard: CardData = {
+        id: `card-${Date.now()}`,
+        ...newCardData
+      };
+      setCards([...cards, newCard]);
+      setEditingCardId(newCard.id);
+      setEditContent('');
+    }
   };
 
   const handleUpdateCard = (cardId: string, content: string) => {
+    if (!isEditMode) return;
     setCards(cards.map(c => c.id === cardId ? { ...c, content } : c));
+    if (onCardUpdate) onCardUpdate(cardId, { content });
+  };
+
+  const handleDoubleClick = (card: CardData) => {
+    if (!isEditMode) {
+      showToast('Enter password to edit cards');
+      return;
+    }
+    
+    setEditingCardId(card.id);
+    setEditContent(card.content);
+  };
+
+  const handleSaveEdit = async (cardId: string) => {
+    if (!isEditMode) return;
+    
+    // Update local state
+    setCards(cards.map(c => c.id === cardId ? { ...c, content: editContent } : c));
+    
+    // Call API to persist if callback provided
+    if (onCardUpdate) {
+      try {
+        await onCardUpdate(cardId, { content: editContent });
+      } catch (error) {
+        console.error('Error updating card:', error);
+        showToast('Failed to save changes');
+      }
+    }
+    
+    setEditingCardId(null);
+    setEditContent('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingCardId(null);
+    setEditContent('');
   };
 
   const handleGenerateSingle = async (cardId: string, colId: string) => {
+    if (!isEditMode) return;
+    
     setGeneratingCards(prev => ({ ...prev, [cardId]: true }));
     try {
       const idea = await generateSingleIdea(projectData.client, projectData.background, projectData.notes, colId, selectedModel);
@@ -239,6 +340,11 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   };
 
   const handleGenerateStory = async () => {
+    if (!isEditMode) {
+      showToast('Enter password to generate stories');
+      return;
+    }
+    
     if (connections.length === 0) return;
     
     const COLUMN_ORDER = ['place', 'role', 'challenge', 'point_a', 'point_b', 'change', 'story'];
@@ -272,9 +378,15 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     try {
       const story = await generateTransformationStory(projectData.client, projectData.background, projectData.notes, chain.join(" -> "), selectedModel);
       const newCardId = `gen-story-${Date.now()}`;
-      const newCard: CardData = { id: newCardId, section: 'story', content: story, starred: false };
-      setCards([...cards, newCard]);
-      setConnections([...connections, { id: `${lastNodeId}-${newCardId}`, from: lastNodeId, to: newCardId }]);
+      if (onCardAdd) {
+        const generatedCardId = await onCardAdd({ section: 'story', content: story, starred: false, order: 0 });
+        if (generatedCardId && onConnectionCreate) {
+          await onConnectionCreate(lastNodeId, generatedCardId);
+        }
+      } else {
+        const newCard: CardData = { id: newCardId, section: 'story', content: story, starred: false };
+        setCards([...cards, newCard]);
+      }
     } catch (e: any) {
       console.error(e);
       if (e?.message?.includes('429') || e?.message?.includes('quota') || e?.status === 429) {
@@ -287,8 +399,19 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     }
   };
 
+  // Handle mouse move for cursor tracking
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (onCursorMove) {
+      const container = document.getElementById('canvas-container');
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        onCursorMove(e.clientX - rect.left, e.clientY - rect.top);
+      }
+    }
+  };
+
   return (
-    <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]">
+    <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]" onMouseMove={handleMouseMove}>
       <InfiniteCanvas>
         <motion.div 
           id="board-container"
@@ -313,141 +436,194 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
           </div>
 
           <div className="flex gap-8 items-start relative z-10" data-pan-target="true">
-            {COLUMNS.map((col, colIdx) => (
-              <motion.div 
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: colIdx * 0.1 }}
-                key={col.id} 
-                className={`${col.id === 'story' ? 'w-[340px]' : 'w-64'} shrink-0 flex flex-col gap-5 relative rounded-2xl transition-colors ${dragOverColId === col.id && !dragOverCardId ? 'bg-gray-50 ring-2 ring-gray-200 p-2 -m-2' : ''}`}
-                onDragOver={(e) => handleDragOverCol(e, col.id)}
-                onDrop={(e) => handleDropOnCol(e, col.id)}
-                data-pan-target="true"
-              >
-                <h3 className="font-bold text-center mb-4 text-lg pointer-events-none">{col.title}</h3>
-                {cards.filter(c => c.section === col.id).map((card, cardIdx) => (
-                  <div 
-                    key={card.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, card.id)}
-                    onDragOver={(e) => handleDragOverCard(e, card.id)}
-                    onDrop={(e) => handleDropOnCard(e, card.id, col.id)}
-                    onDragEnd={handleDragEnd}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectCard(card.id);
-                    }}
-                    className={`relative p-5 rounded-xl text-sm cursor-grab active:cursor-grabbing transition-all duration-200
-                      ${col.color} 
-                      ${selectedCard === card.id ? 'ring-2 ring-indigo-500 shadow-lg scale-[1.02]' : 'hover:shadow-md border border-black/5'}
-                      ${col.id === 'story' ? 'min-h-[240px] text-base p-6 flex items-center justify-center text-center rounded-3xl' : col.id === 'change' ? 'min-h-[180px] flex items-center justify-center text-center rounded-3xl' : 'min-h-[100px]'}
-                      ${draggedCardId === card.id ? 'opacity-50 ring-2 ring-indigo-500 scale-105 shadow-2xl z-50' : ''}
-                      ${dragOverCardId === card.id ? 'border-t-4 border-t-indigo-500 pt-6' : ''}
-                    `}
-                  >
-                    {/* Left Node (Incoming) */}
+            {COLUMNS.map((col, colIdx) => {
+              // Get cards for this column and sort by order
+              const columnCards = cards
+                .filter(c => c.section === col.id)
+                .sort((a, b) => (a.order || 0) - (b.order || 0));
+              
+              return (
+                <motion.div 
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: colIdx * 0.1 }}
+                  key={col.id} 
+                  className={`${col.id === 'story' ? 'w-[340px]' : 'w-64'} shrink-0 flex flex-col gap-5 relative rounded-2xl transition-colors ${dragOverColId === col.id && !dragOverCardId ? 'bg-gray-50 ring-2 ring-gray-200 p-2 -m-2' : ''}`}
+                  onDragOver={(e) => handleDragOverCol(e, col.id)}
+                  onDrop={(e) => handleDropOnCol(e, col.id)}
+                  data-pan-target="true"
+                >
+                  <h3 className="font-bold text-center mb-4 text-lg pointer-events-none">{col.title}</h3>
+                  {columnCards.map((card, cardIdx) => (
                     <div 
-                      id={`node-left-${card.id}`}
-                      className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
-                      title="Incoming connection (Double-click to break)" 
-                      onPointerDown={(e) => {
+                      key={card.id}
+                      draggable={isEditMode}
+                      onDragStart={(e) => handleDragStart(e, card.id)}
+                      onDragOver={(e) => handleDragOverCard(e, card.id)}
+                      onDrop={(e) => handleDropOnCard(e, card.id, col.id)}
+                      onDragEnd={handleDragEnd}
+                      onClick={(e) => {
                         e.stopPropagation();
-                        e.preventDefault();
-                        if (drawingLine) {
-                          const toCardId = card.id;
-                          const fromCardId = drawingLine.startNodeId.replace('node-right-', '');
-                          if (fromCardId !== toCardId) {
-                            setConnections(prev => {
-                              if (prev.some(c => c.from === fromCardId && c.to === toCardId)) return prev;
-                              return [...prev, { id: `${fromCardId}-${toCardId}`, from: fromCardId, to: toCardId }];
-                            });
+                        onSelectCard(card.id);
+                      }}
+                      onDoubleClick={() => handleDoubleClick(card)}
+                      className={`relative p-5 rounded-xl text-sm cursor-grab active:cursor-grabbing transition-all duration-200
+                        ${col.color} 
+                        ${selectedCard === card.id ? 'ring-2 ring-indigo-500 shadow-lg scale-[1.02]' : 'hover:shadow-md border border-black/5'}
+                        ${col.id === 'story' ? 'min-h-[240px] text-base p-6 flex items-center justify-center text-center rounded-3xl' : col.id === 'change' ? 'min-h-[180px] flex items-center justify-center text-center rounded-3xl' : 'min-h-[100px]'}
+                        ${draggedCardId === card.id ? 'opacity-50 ring-2 ring-indigo-500 scale-105 shadow-2xl z-50' : ''}
+                        ${dragOverCardId === card.id ? 'border-t-4 border-t-indigo-500 pt-6' : ''}
+                      `}
+                    >
+                      {/* Left Node (Incoming) */}
+                      <div 
+                        id={`node-left-${card.id}`}
+                        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
+                        title="Incoming connection (Double-click to break)" 
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          if (drawingLine && isEditMode) {
+                            const toCardId = card.id;
+                            const fromCardId = drawingLine.startNodeId.replace('node-right-', '');
+                            if (fromCardId !== toCardId) {
+                              if (!connections.some(c => c.from === fromCardId && c.to === toCardId)) {
+                                onConnectionCreate?.(fromCardId, toCardId);
+                              }
+                            }
+                            setDrawingLine(null);
                           }
-                          setDrawingLine(null);
-                        }
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      onDragStart={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setConnections(prev => prev.filter(c => c.to !== card.id));
-                      }}
-                    />
-                    
-                    {/* Right Node (Outgoing) */}
-                    <div 
-                      id={`node-right-${card.id}`}
-                      className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
-                      title="Outgoing connection (Double-click to break)"
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault(); // Prevent drag start
-                        if (drawingLine && drawingLine.startNodeId === `node-right-${card.id}`) {
-                          setDrawingLine(null);
-                        } else {
-                          setDrawingLine({ startNodeId: `node-right-${card.id}`, endX: e.clientX, endY: e.clientY, startX: e.clientX, startY: e.clientY });
-                        }
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      onDragStart={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setConnections(prev => prev.filter(c => c.from !== card.id));
-                      }}
-                    />
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onDragStart={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          if (isEditMode) {
+                            const incomingConns = connections.filter(c => c.to === card.id);
+                            incomingConns.forEach(conn => onConnectionDelete?.(conn.id));
+                          }
+                        }}
+                      />
+                      
+                      {/* Right Node (Outgoing) */}
+                      <div 
+                        id={`node-right-${card.id}`}
+                        className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
+                        title="Outgoing connection (Double-click to break)"
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          if (!isEditMode) return;
+                          if (drawingLine && drawingLine.startNodeId === `node-right-${card.id}`) {
+                            setDrawingLine(null);
+                          } else {
+                            setDrawingLine({ startNodeId: `node-right-${card.id}`, endX: e.clientX, endY: e.clientY, startX: e.clientX, startY: e.clientY });
+                          }
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onDragStart={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          if (isEditMode) {
+                            const outgoingConns = connections.filter(c => c.from === card.id);
+                            outgoingConns.forEach(conn => onConnectionDelete?.(conn.id));
+                          }
+                        }}
+                      />
 
-                    {card.starred && <Star size={14} className="absolute top-3 left-3 fill-gray-900 text-gray-900" />}
-                    
-                    {card.content ? (
-                      <div className={`${card.starred ? 'mt-5' : ''} font-medium leading-snug text-gray-900`}>
-                        {card.content}
+                      {!!card.starred && <Star size={14} className="absolute top-3 left-3 fill-gray-900 text-gray-900" />}
+                      
+                      {/* Card Number */}
+                      <div className="absolute top-2 right-2 text-xs text-gray-400 font-mono">
+                        #{cardIdx + 1}
                       </div>
-                    ) : (
-                      <div className="flex flex-col gap-2 mt-2" onClick={e => e.stopPropagation()}>
-                        <textarea
-                          autoFocus
-                          placeholder="Type your idea..."
-                          className="w-full text-sm p-2 rounded border border-gray-300 resize-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-text"
-                          onBlur={(e) => handleUpdateCard(card.id, e.target.value)}
-                          onKeyDown={(e) => { 
-                            if (e.key === 'Enter' && !e.shiftKey) { 
-                              e.preventDefault(); 
-                              handleUpdateCard(card.id, e.currentTarget.value); 
-                            } 
-                          }}
-                        />
-                        <button 
-                          onClick={() => handleGenerateSingle(card.id, col.id)} 
-                          disabled={generatingCards[card.id]}
-                          className="flex items-center justify-center gap-2 py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-medium transition-colors disabled:opacity-50 cursor-pointer"
-                        >
-                          {generatingCards[card.id] ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} 
-                          Generate Idea
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                
-                {col.id !== 'change' && col.id !== 'story' && (
-                  <button 
-                    onClick={() => handleAddCard(col.id)}
-                    className="mx-auto w-8 h-8 rounded-full bg-white border border-gray-300 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:border-gray-400 hover:bg-gray-50 transition-all mt-2 shadow-sm cursor-pointer"
-                  >
-                    <Plus size={16} strokeWidth={2.5} />
-                  </button>
-                )}
-              </motion.div>
-            ))}
+                      
+                      {/* Editing Mode */}
+                      {editingCardId === card.id ? (
+                        <div className="flex flex-col gap-2" onClick={e => e.stopPropagation()}>
+                          <textarea
+                            autoFocus
+                            value={editContent}
+                            onChange={(e) => setEditContent(e.target.value)}
+                            placeholder="Type your idea..."
+                            className="w-full text-sm p-2 rounded border border-gray-300 resize-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-text"
+                            onKeyDown={(e) => { 
+                              if (e.key === 'Enter' && !e.shiftKey) { 
+                                e.preventDefault(); 
+                                handleSaveEdit(card.id); 
+                              }
+                              if (e.key === 'Escape') {
+                                handleCancelEdit();
+                              }
+                            }}
+                          />
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => handleSaveEdit(card.id)}
+                              className="flex-1 py-1.5 px-2 bg-indigo-600 text-white rounded text-xs font-medium hover:bg-indigo-700"
+                            >
+                              Save
+                            </button>
+                            <button 
+                              onClick={handleCancelEdit}
+                              className="flex-1 py-1.5 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium hover:bg-gray-300"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : card.content ? (
+                        <div className={`${card.starred ? 'mt-5' : ''} font-medium leading-snug text-gray-900`}>
+                          {card.content}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-2 mt-2" onClick={e => e.stopPropagation()}>
+                          <textarea
+                            autoFocus
+                            placeholder="Type your idea..."
+                            className="w-full text-sm p-2 rounded border border-gray-300 resize-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-text"
+                            onBlur={(e) => handleUpdateCard(card.id, e.target.value)}
+                            onKeyDown={(e) => { 
+                              if (e.key === 'Enter' && !e.shiftKey) { 
+                                e.preventDefault(); 
+                                handleUpdateCard(card.id, e.currentTarget.value); 
+                              }
+                            }}
+                          />
+                          <button 
+                            onClick={() => handleGenerateSingle(card.id, col.id)} 
+                            disabled={generatingCards[card.id]}
+                            className="flex items-center justify-center gap-2 py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-medium transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            {generatingCards[card.id] ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} 
+                            Generate Idea
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  
+                  {col.id !== 'change' && col.id !== 'story' && isEditMode && (
+                    <button 
+                      onClick={() => handleAddCard(col.id)}
+                      className="mx-auto w-8 h-8 rounded-full bg-white border border-gray-300 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:border-gray-400 hover:bg-gray-50 transition-all mt-2 shadow-sm cursor-pointer"
+                    >
+                      <Plus size={16} strokeWidth={2.5} />
+                    </button>
+                  )}
+                </motion.div>
+              );
+            })}
           </div>
         </motion.div>
       </InfiniteCanvas>
@@ -459,7 +635,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
       
       {/* Floating Save/Download buttons */}
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-50">
-        {connections.length > 0 && (
+        {connections.length > 0 && isEditMode && (
           <button 
             onClick={handleGenerateStory}
             disabled={generatingStory}
@@ -470,9 +646,29 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
           </button>
         )}
         <div className="flex items-center gap-3 bg-white/90 backdrop-blur-sm rounded-full shadow-xl border border-gray-200/50 p-3">
-          <button className="p-3 hover:bg-gray-100 rounded-full transition-colors text-gray-700 hover:text-gray-900"><Save size={24} /></button>
+          <button 
+            className="p-3 hover:bg-gray-100 rounded-full transition-colors text-gray-700 hover:text-gray-900"
+            onClick={() => {
+              if (currentSession?.id) {
+                window.open(`/api/sessions/${currentSession.id}/export/markdown`, '_blank');
+              }
+            }}
+            title="Export as Markdown"
+          >
+            <Save size={24} />
+          </button>
           <div className="w-px h-6 bg-gray-200"></div>
-          <button className="p-3 hover:bg-gray-100 rounded-full transition-colors text-gray-700 hover:text-gray-900"><Download size={24} /></button>
+          <button 
+            className="p-3 hover:bg-gray-100 rounded-full transition-colors text-gray-700 hover:text-gray-900"
+            onClick={() => {
+              if (currentSession?.id) {
+                window.open(`/api/sessions/${currentSession.id}/export/zip`, '_blank');
+              }
+            }}
+            title="Download ZIP"
+          >
+            <Download size={24} />
+          </button>
         </div>
       </div>
     </div>

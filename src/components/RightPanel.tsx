@@ -10,6 +10,8 @@ interface RightPanelProps {
   cards: CardData[];
   projectData: { client: string; background: string; notes: string };
   selectedModel: ModelType;
+  currentSession?: { id: string; name: string } | null;
+  isEditMode?: boolean;
 }
 
 interface ChatMessage {
@@ -18,7 +20,15 @@ interface ChatMessage {
   text: string;
 }
 
-export default function RightPanel({ selectedCard, currentView, cards, projectData, selectedModel }: RightPanelProps) {
+export default function RightPanel({ 
+  selectedCard, 
+  currentView, 
+  cards, 
+  projectData, 
+  selectedModel,
+  currentSession,
+  isEditMode 
+}: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<'notepad' | 'cards' | 'chat'>('chat');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
