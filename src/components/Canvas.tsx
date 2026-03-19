@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Star, Plus, Save, Download, Sparkles, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Star, Plus, Save, Download, Sparkles, Loader2, Trash2 } from 'lucide-react';
 import { COLUMNS } from '../data';
 import { CardData } from '../types';
 import { motion } from 'motion/react';
@@ -101,6 +101,10 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   // Track which card is being edited inline
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+
+  // InfiniteCanvas pan/scale state - lifted here to persist across card edits
+  const [pan, setPan] = useState({ x: 100, y: 100 });
+  const [scale, setScale] = useState(1);
 
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
@@ -281,8 +285,18 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
 
   const handleUpdateCard = (cardId: string, content: string) => {
     if (!isEditMode) return;
+    
+    // Prevent infinite loop by returning early if content hasn't changed
+    const card = cards.find(c => c.id === cardId);
+    if (!card || card.content === content) return;
+
     setCards(cards.map(c => c.id === cardId ? { ...c, content } : c));
-    if (onCardUpdate) onCardUpdate(cardId, { content });
+    if (onCardUpdate) {
+      onCardUpdate(cardId, { content }).catch((error) => {
+        console.error('Error updating card:', error);
+        showToast('Failed to save changes');
+      });
+    }
   };
 
   const handleDoubleClick = (card: CardData) => {
@@ -410,9 +424,45 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     }
   };
 
+  // Handle delete card with confirmation
+  const handleDeleteCard = useCallback(async (cardId: string) => {
+    if (!isEditMode) {
+      showToast('Enter password to delete cards');
+      return;
+    }
+    
+    const confirmed = window.confirm('Are you sure you want to delete this card?');
+    if (!confirmed) return;
+    
+    try {
+      if (onCardDelete) {
+        await onCardDelete(cardId);
+      }
+    } catch (error) {
+      console.error('Error deleting card:', error);
+      showToast('Failed to delete card');
+    }
+  }, [isEditMode, onCardDelete, showToast]);
+
+  // Handle keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' && selectedCard && isEditMode) {
+        const activeEl = document.activeElement;
+        const isEditingText = activeEl?.tagName === 'TEXTAREA' || activeEl?.tagName === 'INPUT';
+        if (!isEditingText) {
+          handleDeleteCard(selectedCard);
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedCard, isEditMode, handleDeleteCard]);
+
   return (
     <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]" onMouseMove={handleMouseMove}>
-      <InfiniteCanvas>
+      <InfiniteCanvas pan={pan} scale={scale} onPanChange={setPan} onScaleChange={setScale}>
         <motion.div 
           id="board-container"
           initial={{ opacity: 0, y: 20 }}
@@ -467,7 +517,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                         onSelectCard(card.id);
                       }}
                       onDoubleClick={() => handleDoubleClick(card)}
-                      className={`relative p-5 rounded-xl text-sm cursor-grab active:cursor-grabbing transition-all duration-200
+                      className={`relative p-5 rounded-xl text-sm cursor-grab active:cursor-grabbing transition-all duration-200 group
                         ${col.color} 
                         ${selectedCard === card.id ? 'ring-2 ring-indigo-500 shadow-lg scale-[1.02]' : 'hover:shadow-md border border-black/5'}
                         ${col.id === 'story' ? 'min-h-[240px] text-base p-6 flex items-center justify-center text-center rounded-3xl' : col.id === 'change' ? 'min-h-[180px] flex items-center justify-center text-center rounded-3xl' : 'min-h-[100px]'}
@@ -542,6 +592,18 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                       />
 
                       {!!card.starred && <Star size={14} className="absolute top-3 left-3 fill-gray-900 text-gray-900" />}
+                      
+                      {/* Delete button - visible on hover */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteCard(card.id);
+                        }}
+                        className="absolute bottom-2 right-2 p-1.5 rounded-lg hover:bg-red-100 text-gray-400 hover:text-red-600 transition-all opacity-0 group-hover:opacity-100"
+                        title="Delete card"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                       
                       {/* Card Number */}
                       <div className="absolute top-2 right-2 text-xs text-gray-400 font-mono">

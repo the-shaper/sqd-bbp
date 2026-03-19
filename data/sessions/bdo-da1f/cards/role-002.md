@@ -1,10 +1,10 @@
 ---
-id: card-1773700604842
+id: card-1773947934677
 section: role
-createdAt: '2026-03-16T22:36:44.842Z'
-updatedAt: '2026-03-16T22:36:44.842Z'
+createdAt: '2026-03-19T19:18:54.678Z'
+updatedAt: '2026-03-19T19:18:54.678Z'
 starred: false
 order: 2
 ---
 
- guinea pigs for their own tools—founder-clients testing and polishing creative sovereignty tools through their own label releases and agency collaborations.
+

@@ -521,14 +521,29 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       localStorage.setItem('bbp_user_id', adminProfile.id);
       setUserProfile(adminProfile);
     } else {
-      // For guests: always ask for name (don't persist across refreshes)
-      // Clear any existing guest profile to ensure fresh start
-      localStorage.removeItem('bbp_user_profile');
-      localStorage.removeItem('bbp_user_id');
-      setUserProfile(null);
-      setShowProfilePrompt(true);
+      // For guests: don't clear, check if they exist first to avoid name re-entry on refresh
+      const storedProfile = localStorage.getItem('bbp_user_profile');
+      if (storedProfile) {
+        try {
+          setUserProfile(JSON.parse(storedProfile));
+        } catch (e) {
+          localStorage.removeItem('bbp_user_profile');
+          localStorage.removeItem('bbp_user_id');
+          setUserProfile(null);
+          setShowProfilePrompt(true);
+        }
+      } else {
+        setUserProfile(null);
+        setShowProfilePrompt(true);
+      }
     }
   }, [isAdmin]);
+
+  const handleExitSession = () => {
+    localStorage.removeItem('bbp_user_profile');
+    localStorage.removeItem('bbp_user_id');
+    window.location.href = '/';
+  };
 
   // Initialize PartyKit connection
   const {
@@ -592,6 +607,8 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
 
   const handleProfileSubmit = (profile: UserProfile) => {
     setUserProfile(profile);
+    localStorage.setItem('bbp_user_profile', JSON.stringify(profile));
+    localStorage.setItem('bbp_user_id', profile.id);
     setShowProfilePrompt(false);
   };
 
@@ -878,7 +895,15 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         throw new Error('Failed to create card');
       }
 
-      const newCard = await response.json();
+      const data = await response.json();
+      
+      const newCard: CardData = {
+        id: data.card.id,
+        section: data.card.section,
+        content: data.card.content || '',
+        starred: data.card.starred || false,
+        order: data.card.order_index
+      };
 
       // Add to local state
       setCards(prev => [...prev, newCard]);
@@ -1049,10 +1074,30 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       />
 
       <div className="flex flex-col flex-1 min-w-0">
-        <TopBar projectName={currentSession.name}>
+        <TopBar 
+          projectName={currentSession.name}
+          rightContent={
+            isAdmin && (
+              <button 
+                onClick={() => window.location.href = '/'}
+                className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors shadow-sm whitespace-nowrap"
+              >
+                Exit Session
+              </button>
+            )
+          }
+        >
           <div className="flex items-center gap-3">
             <ActiveUsers users={activeUsers} currentUserId={userProfile?.id || ''} />
             <ConnectionStatus isConnected={isConnected} isConnecting={isConnecting} />
+            {!isAdmin && (
+              <button 
+                onClick={handleExitSession}
+                className="ml-2 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors shadow-sm"
+              >
+                Exit
+              </button>
+            )}
           </div>
         </TopBar>
         <div className="flex flex-1 overflow-hidden relative">

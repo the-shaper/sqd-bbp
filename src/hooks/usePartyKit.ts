@@ -371,15 +371,12 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Reconnect
+  // Reconnect - PartySocket handles reconnection automatically
+  // This is just for manual reconnection if needed
   const reconnect = useCallback(() => {
     if (socketRef.current) {
-      socketRef.current.close();
+      socketRef.current.reconnect();
     }
-    // The useEffect will trigger reconnection when sessionId changes
-    // So we'll manually trigger by temporarily setting sessionId to null then back
-    // Actually, let me implement this differently
-    window.location.reload(); // Simple approach for now
   }, []);
 
   return {

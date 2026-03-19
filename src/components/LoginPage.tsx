@@ -4,16 +4,26 @@
  */
 
 import React, { useState } from 'react';
-import { Lock, Unlock, Loader2 } from 'lucide-react';
+import { Lock, Unlock, Loader2, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 interface LoginPageProps {
   onLogin: (sessionId: string) => void;
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
+  const navigate = useNavigate();
+  const [sessionCode, setSessionCode] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleJoinSession = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (sessionCode.trim()) {
+      navigate(`/${sessionCode.trim()}`);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,6 +73,43 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* Form */}
         <div className="p-8">
+          {/* Join Session Section */}
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Join Session</h2>
+          <p className="text-gray-600 mb-6">
+            Enter your session code to join as a player
+          </p>
+
+          <form onSubmit={handleJoinSession} className="mb-8 pb-8 border-b border-gray-200">
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Session Code
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-medium select-none text-base">
+                  /
+                </span>
+                <input
+                  type="text"
+                  value={sessionCode}
+                  onChange={(e) => setSessionCode(e.target.value)}
+                  placeholder="bdo-xxxx"
+                  className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-base"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!sessionCode.trim()}
+              className="w-full px-4 py-3 bg-white text-indigo-600 border border-indigo-200 rounded-lg hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
+            >
+              Enter Session
+              <ArrowRight size={18} />
+            </button>
+          </form>
+
+          {/* Admin Login Section */}
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Admin Login</h2>
           <p className="text-gray-600 mb-6">
             Enter the admin password to access the dashboard
@@ -85,9 +132,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="shazam!"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-10"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-10 text-base"
                   disabled={isLoading}
-                  autoFocus
                 />
                 <Lock size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
               </div>
@@ -112,15 +158,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               )}
             </button>
           </form>
-
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-500">
-              Player access: Visit a session URL directly
-            </p>
-            <p className="text-xs text-gray-400 mt-1">
-              Example: website.com/bdo-xxxx
-            </p>
-          </div>
         </div>
       </div>
     </div>

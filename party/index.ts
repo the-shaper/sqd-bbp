@@ -35,12 +35,14 @@ export default class SessionServer implements Party.Server {
   };
 
   private state: RoomState;
+  private connectionToUser: Map<string, string>;
 
   constructor(readonly room: Party.Room) {
     this.state = {
       users: new Map(),
       lastActivity: Date.now(),
     };
+    this.connectionToUser = new Map();
   }
 
   // Handle new WebSocket connections
@@ -76,6 +78,7 @@ export default class SessionServer implements Party.Server {
         case "presence:update":
           // Update user presence and broadcast
           if (data.user) {
+            this.connectionToUser.set(sender.id, data.user.id);
             this.state.users.set(data.user.id, {
               ...data.user,
               lastActive: Date.now(),
@@ -97,10 +100,18 @@ export default class SessionServer implements Party.Server {
         case "user:join":
           // Add user to presence and broadcast
           if (data.user) {
+            this.connectionToUser.set(sender.id, data.user.id);
             this.state.users.set(data.user.id, {
               ...data.user,
               lastActive: Date.now(),
             });
+            this.room.broadcast(message);
+          }
+          break;
+
+        case "user:leave":
+          if ('userId' in data && data.userId) {
+            this.state.users.delete(data.userId);
             this.room.broadcast(message);
           }
           break;
@@ -117,11 +128,18 @@ export default class SessionServer implements Party.Server {
   onClose(conn: Party.Connection): void {
     console.log(`[PartyKit] User disconnected from room ${this.room.id}: ${conn.id}`);
     
-    // Find and remove the user
-    for (const [userId, user] of this.state.users.entries()) {
-      // Note: We can't directly map connection ID to user ID in this simple implementation
-      // In a production app, you'd want to store the mapping
-      // For now, we'll rely on client-side to send user:leave before disconnect
+    // Find and remove the user based on connection mapping
+    const userId = this.connectionToUser.get(conn.id);
+    if (userId) {
+      this.state.users.delete(userId);
+      this.connectionToUser.delete(conn.id);
+      
+      const leaveMessage: Message = {
+        type: "user:leave",
+        userId,
+        timestamp: Date.now()
+      };
+      this.room.broadcast(JSON.stringify(leaveMessage));
     }
   }
 

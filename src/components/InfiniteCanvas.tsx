@@ -1,16 +1,18 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useEffect, ReactNode } from 'react';
 import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 
 interface InfiniteCanvasProps {
-  children: React.ReactNode;
+  children: ReactNode;
+  pan: { x: number; y: number };
+  scale: number;
+  onPanChange: (pan: { x: number; y: number }) => void;
+  onScaleChange: (scale: number) => void;
 }
 
-export default function InfiniteCanvas({ children }: InfiniteCanvasProps) {
+export default function InfiniteCanvas({ children, pan, scale, onPanChange, onScaleChange }: InfiniteCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pan, setPan] = useState({ x: 100, y: 100 });
-  const [scale, setScale] = useState(1);
-  const [isPanning, setIsPanning] = useState(false);
-  const startPan = useRef({ x: 0, y: 0 });
+  const isPanningRef = useRef(false);
+  const startPanRef = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -19,75 +21,72 @@ export default function InfiniteCanvas({ children }: InfiniteCanvasProps) {
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
-        // Zoom
         const zoomSensitivity = 0.005;
         const delta = -e.deltaY * zoomSensitivity;
-        setScale((prevScale) => {
-          const newScale = Math.min(Math.max(0.1, prevScale * (1 + delta)), 3);
-          
-          const rect = container.getBoundingClientRect();
-          const mouseX = e.clientX - rect.left;
-          const mouseY = e.clientY - rect.top;
+        const newScale = Math.min(Math.max(0.1, scale * (1 + delta)), 3);
+        
+        const rect = container.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
 
-          const scaleRatio = newScale / prevScale;
-          setPan((prevPan) => ({
-            x: mouseX - (mouseX - prevPan.x) * scaleRatio,
-            y: mouseY - (mouseY - prevPan.y) * scaleRatio
-          }));
+        const scaleRatio = newScale / scale;
+        const newPan = {
+          x: mouseX - (mouseX - pan.x) * scaleRatio,
+          y: mouseY - (mouseY - pan.y) * scaleRatio
+        };
 
-          return newScale;
-        });
+        onScaleChange(newScale);
+        onPanChange(newPan);
       } else {
-        // Pan
-        setPan((prevPan) => ({
-          x: prevPan.x - e.deltaX,
-          y: prevPan.y - e.deltaY
-        }));
+        onPanChange({
+          x: pan.x - e.deltaX,
+          y: pan.y - e.deltaY
+        });
       }
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, [pan, scale, onPanChange, onScaleChange]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     const target = e.target as HTMLElement;
     const isPanTarget = target === containerRef.current || target.getAttribute('data-pan-target') === 'true';
 
     if (e.button === 1 || (e.button === 0 && isPanTarget)) {
-      setIsPanning(true);
-      startPan.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+      isPanningRef.current = true;
+      startPanRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
       containerRef.current?.setPointerCapture(e.pointerId);
       e.preventDefault();
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (isPanning) {
-      setPan({
-        x: e.clientX - startPan.current.x,
-        y: e.clientY - startPan.current.y
+    if (isPanningRef.current) {
+      onPanChange({
+        x: e.clientX - startPanRef.current.x,
+        y: e.clientY - startPanRef.current.y
       });
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    setIsPanning(false);
+    isPanningRef.current = false;
     containerRef.current?.releasePointerCapture(e.pointerId);
   };
 
-  const handleZoomIn = () => setScale(s => Math.min(s * 1.2, 3));
-  const handleZoomOut = () => setScale(s => Math.max(s / 1.2, 0.1));
+  const handleZoomIn = () => onScaleChange(Math.min(scale * 1.2, 3));
+  const handleZoomOut = () => onScaleChange(Math.max(scale / 1.2, 0.1));
   const handleReset = () => {
-    setScale(1);
-    setPan({ x: 100, y: 100 });
+    onScaleChange(1);
+    onPanChange({ x: 100, y: 100 });
   };
 
   return (
     <div className="relative w-full h-full overflow-hidden">
       <div 
         ref={containerRef}
-        className={`absolute inset-0 touch-none ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+        className={`absolute inset-0 touch-none ${isPanningRef.current ? 'cursor-grabbing' : 'cursor-grab'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

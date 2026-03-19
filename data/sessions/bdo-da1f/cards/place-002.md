@@ -1,10 +1,10 @@
 ---
-id: card-1773700604830
+id: card-1773945337336
 section: place
-createdAt: '2026-03-16T22:36:44.830Z'
-updatedAt: '2026-03-16T22:36:44.830Z'
+createdAt: '2026-03-19T18:35:37.338Z'
+updatedAt: '2026-03-19T18:35:54.132Z'
 starred: false
 order: 2
 ---
 
-A landscape of early stage and seed stage ventures hungry for tools that enable creative sovereignty but lacking the resources to build them from scratch.
+Type an idea
