@@ -1,73 +1,138 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Beyond Bullet Points
 
-# Run and deploy your AI Studio app
+Beyond Bullet Points is a collaborative storytelling canvas for building presentations with the Beyond Bullet Points framework. It combines an admin dashboard, public session links, AI-assisted idea generation, markdown-backed card storage, exports, and real-time multiplayer presence.
 
-This contains everything you need to run your app locally.
+## What It Does
 
-View your app in AI Studio: https://ai.studio/apps/a661423f-e552-4183-8e32-b52b74a2668d
+- Admins sign in at `/login` and manage all sessions from the dashboard.
+- Participants join directly through a session URL like `/bdo-xxxx`.
+- Sessions can be open or password-protected.
+- Admins complete the initial "New Project" onboarding with client, background, and notes.
+- The canvas organizes ideas into 7 sections:
+  - `place`
+  - `role`
+  - `challenge`
+  - `point_a`
+  - `point_b`
+  - `change`
+  - `story`
+- Cards can be created, edited, reordered, starred, connected, and exported.
+- Multiplayer presence, cursors, and live updates run through PartyKit.
 
-## Run Locally
+## Tech Stack
 
-**Prerequisites:**  Node.js
+- React 19 + TypeScript
+- Vite
+- Express
+- SQLite via `better-sqlite3`
+- Markdown card files with YAML frontmatter
+- PartyKit + `partysocket` for real-time collaboration
+- AI support through Gemini and the Opencode proxy
 
+## Key Routes
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- `/login` - admin login and session join screen
+- `/` - admin dashboard after login
+- `/:sessionId` - public session view
 
-### Multiplayer Development (Both Servers Required)
+## Project Data
 
-For real-time multiplayer collaboration, you need to run **two servers** simultaneously:
+Session data is stored locally under `data/`:
 
-**Terminal 1 - PartyKit (WebSocket Server):**
+- `data/sessions.db` - SQLite database
+- `data/sessions/<sessionId>/session.json` - session metadata
+- `data/sessions/<sessionId>/cards/*.md` - card content
+- `data/sessions/<sessionId>/connections.json` - saved card connections
+
+## Local Setup
+
+### Prerequisites
+
+- Node.js 18 or newer
+- npm
+- A Gemini API key for AI generation
+
+### Install
+
+```bash
+npm install
+```
+
+### Environment Variables
+
+Create a `.env` file with the values you need:
+
+```bash
+GEMINI_API_KEY=your_gemini_api_key
+ADMIN_PASSWORD=shazam!
+PARTYKIT_HOST=localhost:1999
+PARTYKIT_ADMIN_SECRET=your_partykit_secret
+VITE_PARTYKIT_HOST=localhost:1999
+VITE_PARTYKIT_PARTY=main
+```
+
+Notes:
+
+- `ADMIN_PASSWORD` defaults to `shazam!` if not set.
+- `VITE_PARTYKIT_HOST` is used by the browser client.
+- `PARTYKIT_HOST` is used by the server when minting admin tokens.
+
+### Run the App
+
+Start the Express/Vite app:
+
+```bash
+npm run dev
+```
+
+In a second terminal, start PartyKit for realtime collaboration:
+
 ```bash
 npm run partykit:dev
 ```
 
-**Terminal 2 - Express (API + Frontend):**
+Then open:
+
+- `http://localhost:3000/login`
+
+## Useful Scripts
+
 ```bash
-npm run dev
+npm run build
+npm run preview
+npm run lint
+npm run clean
 ```
 
-**Access the app:**
-- Open `http://localhost:3000` in your browser
-- For multiplayer testing, open multiple browser windows/tabs
+## Typical Workflow
 
-### Restarting Servers
+1. Log in as admin.
+2. Create a session from the dashboard.
+3. Share the generated `/bdo-xxxx` URL with collaborators.
+4. Complete the New Project onboarding if the session is still in setup.
+5. Add and connect cards across the canvas.
+6. Export the session as ZIP, Markdown, or JSON when the story is ready.
 
-**To restart both servers:**
+## Multiplayer Notes
 
-1. **Stop both terminals** (press Ctrl+C in each)
-2. **Clear browser localStorage** (optional, for fresh testing):
-   ```javascript
-   // In browser console (F12):
-   localStorage.clear()
-   location.reload()
-   ```
-3. **Restart Terminal 1:** `npm run partykit:dev`
-4. **Restart Terminal 2:** `npm run dev`
+- Users pick a display name and color when joining a session.
+- Admins can edit any session without entering a session password.
+- Password-protected sessions require the correct session password for edit access.
+- Live cursors, presence, and card updates sync in real time through PartyKit.
 
-**Quick Restart Script (optional):**
-Create a `restart.sh` file:
-```bash
-#!/bin/bash
-pkill -f "partykit dev"
-pkill -f "tsx server.ts"
-sleep 1
-npm run partykit:dev &
-npm run dev
-```
+## API Overview
 
-### Testing Multiplayer Locally
+The server exposes endpoints for:
 
-1. **Start both servers** (see above)
-2. **Browser 1 (Chrome):** Login as admin → Create session
-3. **Browser 2 (Firefox/Safari):** Join same session URL
-4. **Test real-time sync:**
-   - Create cards in one browser → appears in other
-   - Move cursors → visible to all users
-   - Edit cards → updates in real-time
+- Admin login, logout, auth checks, and PartyKit token minting
+- Session creation, listing, updating, onboarding completion, deletion, and password verification
+- Card CRUD and card reordering
+- Connection CRUD and bulk save
+- Exporting sessions as ZIP, Markdown, or JSON
+
+## Development Notes
+
+- The app runs as a single Express server with Vite middleware in development.
+- Production serves the built app from `dist/`.
+- Card files are written as Markdown with YAML frontmatter so sessions stay human-readable and export-friendly.
+
