@@ -1,26 +1,29 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import PartySocket from 'partysocket';
-import type { Message, UserPresence } from '../../party/index';
+import type { Message, UserPresence, LiveConnection } from '../../party/index';
 import type { CardData } from '../types';
-
-const PARTY_KIT_HOST = process.env.PARTYKIT_HOST || 'localhost:1999';
-const PARTY_KIT_PROTOCOL = process.env.NODE_ENV === 'production' ? 'wss' : 'ws';
+import {
+  PARTYKIT_HOST,
+  PARTYKIT_HTTP_PROTOCOL,
+  PARTYKIT_PARTY,
+  PARTYKIT_WS_PROTOCOL,
+} from '../config/partykit';
 
 interface UsePartyKitOptions {
   sessionId: string | null;
   userId: string;
   userName: string;
   userColor: string;
+  adminToken?: string | null;
   onCardCreate?: (card: CardData) => void;
   onCardUpdate?: (cardId: string, updates: Partial<CardData>) => void;
   onCardDelete?: (cardId: string) => void;
   onCardReorder?: (section: string, cardIds: string[]) => void;
   onConnectionCreate?: (connection: { id: string; from: string; to: string }) => void;
   onConnectionDelete?: (connectionId: string) => void;
-  onPresenceUpdate?: (users: UserPresence[]) => void;
   onCursorMove?: (userId: string, x: number, y: number) => void;
-  onUserJoin?: (user: UserPresence) => void;
   onUserLeave?: (userId: string) => void;
+  onKicked?: (message: string) => void;
 }
 
 interface UsePartyKitReturn {
@@ -28,6 +31,9 @@ interface UsePartyKitReturn {
   isConnecting: boolean;
   error: Error | null;
   users: UserPresence[];
+  liveConnections: LiveConnection[];
+  currentConnectionId: string | null;
+  connectionRole: 'admin' | 'participant' | null;
   sendCardCreate: (card: CardData) => void;
   sendCardUpdate: (cardId: string, updates: Partial<CardData>) => void;
   sendCardDelete: (cardId: string) => void;
@@ -36,6 +42,7 @@ interface UsePartyKitReturn {
   sendConnectionDelete: (connectionId: string) => void;
   sendPresenceUpdate: (updates: Partial<UserPresence>) => void;
   sendCursorMove: (x: number, y: number) => void;
+  sendAdminKick: (connectionId: string, userId?: string | null) => void;
   reconnect: () => void;
 }
 
@@ -44,23 +51,38 @@ export function usePartyKit({
   userId,
   userName,
   userColor,
+  adminToken,
   onCardCreate,
   onCardUpdate,
   onCardDelete,
   onCardReorder,
   onConnectionCreate,
   onConnectionDelete,
-  onPresenceUpdate,
   onCursorMove,
-  onUserJoin,
   onUserLeave,
+  onKicked,
 }: UsePartyKitOptions): UsePartyKitReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [users, setUsers] = useState<UserPresence[]>([]);
-  
+  const [liveConnections, setLiveConnections] = useState<LiveConnection[]>([]);
+  const [currentConnectionId, setCurrentConnectionId] = useState<string | null>(null);
+  const [connectionRole, setConnectionRole] = useState<'admin' | 'participant' | null>(null);
+
   const socketRef = useRef<PartySocket | null>(null);
+  const kickedMessageRef = useRef<string | null>(null);
+  const callbacksRef = useRef({
+    onCardCreate,
+    onCardUpdate,
+    onCardDelete,
+    onCardReorder,
+    onConnectionCreate,
+    onConnectionDelete,
+    onCursorMove,
+    onUserLeave,
+    onKicked,
+  });
   const userPresenceRef = useRef<UserPresence>({
     id: userId,
     name: userName,
@@ -68,166 +90,191 @@ export function usePartyKit({
     lastActive: Date.now(),
   });
 
-  // Connect to PartyKit when sessionId changes
+  useEffect(() => {
+    userPresenceRef.current = {
+      ...userPresenceRef.current,
+      id: userId,
+      name: userName,
+      color: userColor,
+    };
+  }, [userId, userName, userColor]);
+
+  useEffect(() => {
+    callbacksRef.current = {
+      onCardCreate,
+      onCardUpdate,
+      onCardDelete,
+      onCardReorder,
+      onConnectionCreate,
+      onConnectionDelete,
+      onCursorMove,
+      onUserLeave,
+      onKicked,
+    };
+  }, [
+    onCardCreate,
+    onCardDelete,
+    onCardReorder,
+    onCardUpdate,
+    onConnectionCreate,
+    onConnectionDelete,
+    onCursorMove,
+    onKicked,
+    onUserLeave,
+  ]);
+
   useEffect(() => {
     if (!sessionId) {
       setIsConnected(false);
       setUsers([]);
+      setLiveConnections([]);
+      setCurrentConnectionId(null);
+      setConnectionRole(null);
       return;
     }
 
     setIsConnecting(true);
     setError(null);
+    kickedMessageRef.current = null;
 
     const room = `session-${sessionId}`;
-    const wsUrl = `${PARTY_KIT_PROTOCOL}://${PARTY_KIT_HOST}/party/${room}`;
-
-    console.log(`[PartyKit] Connecting to ${wsUrl}`);
-
     const socket = new PartySocket({
-      host: `${PARTY_KIT_PROTOCOL}://${PARTY_KIT_HOST}`,
+      host: PARTYKIT_HOST,
       room,
+      party: PARTYKIT_PARTY,
+      protocol: PARTYKIT_WS_PROTOCOL,
+      query: () => (adminToken ? { adminToken } : {}),
     });
 
     socketRef.current = socket;
 
     socket.onopen = () => {
-      console.log('[PartyKit] Connected with userId:', userId);
       setIsConnected(true);
       setIsConnecting(false);
       setError(null);
+      setCurrentConnectionId(socket.id);
 
-      // Send user join message
       const joinMessage: Message = {
-        type: 'user:join',
-        user: userPresenceRef.current,
+        type: 'presence:update',
+        user: {
+          ...userPresenceRef.current,
+          lastActive: Date.now(),
+        },
         timestamp: Date.now(),
       };
       socket.send(JSON.stringify(joinMessage));
-      console.log('[PartyKit] Sent user:join', userPresenceRef.current);
     };
 
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as Message;
-        
+
         switch (data.type) {
           case 'card:create':
-            console.log('[PartyKit] Received card:create', data.card.id, 'from', data.userId, 'my userId:', userId);
-            if (data.userId !== userId && onCardCreate) {
-              console.log('[PartyKit] Processing card:create from other user');
-              onCardCreate(data.card);
-            } else {
-              console.log('[PartyKit] Ignoring card:create (own card or no handler)');
+            if (data.userId !== userId && callbacksRef.current.onCardCreate) {
+              callbacksRef.current.onCardCreate(data.card);
             }
             break;
 
           case 'card:update':
-            if (data.userId !== userId && onCardUpdate) {
-              onCardUpdate(data.cardId, data.updates);
+            if (data.userId !== userId && callbacksRef.current.onCardUpdate) {
+              callbacksRef.current.onCardUpdate(data.cardId, data.updates);
             }
             break;
 
           case 'card:delete':
-            if (data.userId !== userId && onCardDelete) {
-              onCardDelete(data.cardId);
+            if (data.userId !== userId && callbacksRef.current.onCardDelete) {
+              callbacksRef.current.onCardDelete(data.cardId);
             }
             break;
 
           case 'card:reorder':
-            if (data.userId !== userId && onCardReorder) {
-              onCardReorder(data.section, data.cardIds);
+            if (data.userId !== userId && callbacksRef.current.onCardReorder) {
+              callbacksRef.current.onCardReorder(data.section, data.cardIds);
             }
             break;
 
           case 'connection:create':
-            if (data.userId !== userId && onConnectionCreate) {
-              onConnectionCreate(data.connection);
+            if (data.userId !== userId && callbacksRef.current.onConnectionCreate) {
+              callbacksRef.current.onConnectionCreate(data.connection);
             }
             break;
 
           case 'connection:delete':
-            if (data.userId !== userId && onConnectionDelete) {
-              onConnectionDelete(data.connectionId);
+            if (data.userId !== userId && callbacksRef.current.onConnectionDelete) {
+              callbacksRef.current.onConnectionDelete(data.connectionId);
             }
             break;
 
-          case 'presence:init': {
-            const initData = data as { type: 'presence:init'; users: UserPresence[]; timestamp: number };
-            if (initData.users && Array.isArray(initData.users)) {
-              setUsers(initData.users.filter(u => u.id !== userId));
-              if (onPresenceUpdate) {
-                onPresenceUpdate(initData.users);
-              }
-            }
+          case 'room:snapshot': {
+            setUsers(Array.isArray(data.users) ? data.users : []);
+            setLiveConnections(Array.isArray(data.connections) ? data.connections : []);
+            const selfConnection = Array.isArray(data.connections)
+              ? data.connections.find((entry) => entry.connectionId === socket.id)
+              : undefined;
+            setConnectionRole(selfConnection?.role ?? 'participant');
             break;
           }
 
-          case 'presence:update':
-            if ('user' in data && data.user) {
-              setUsers(prev => {
-                const filtered = prev.filter(u => u.id !== data.user!.id);
-                if (data.user!.id !== userId) {
-                  return [...filtered, data.user!];
-                }
-                return filtered;
-              });
-              if (onPresenceUpdate) {
-                onPresenceUpdate([...users, data.user]);
-              }
-            }
-            break;
-
           case 'cursor:move':
-            if (data.userId !== userId && onCursorMove) {
-              onCursorMove(data.userId, data.x, data.y);
+            if (data.userId !== userId && callbacksRef.current.onCursorMove) {
+              callbacksRef.current.onCursorMove(data.userId, data.x, data.y);
             }
-            // Update user cursor in local state
-            setUsers(prev => prev.map(u => 
-              u.id === data.userId ? { ...u, cursor: { x: data.x, y: data.y } } : u
-            ));
+            setUsers((prev) =>
+              prev.map((user) =>
+                user.id === data.userId ? { ...user, cursor: { x: data.x, y: data.y } } : user
+              )
+            );
             break;
 
-          case 'user:join':
-            if ('user' in data && data.user && data.user.id !== userId) {
-              setUsers(prev => [...prev.filter(u => u.id !== data.user!.id), data.user!]);
-              if (onUserJoin) {
-                onUserJoin(data.user);
-              }
-            }
-            break;
-
-          case 'user:leave':
-            if ('userId' in data) {
-              setUsers(prev => prev.filter(u => u.id !== data.userId));
-              if (onUserLeave) {
-                onUserLeave(data.userId);
-              }
+          case 'user:kick':
+            if (data.userId === userId) {
+              kickedMessageRef.current = data.message;
+              setError(new Error(data.message));
+              callbacksRef.current.onKicked?.(data.message);
+              socketRef.current?.close();
+            } else if (callbacksRef.current.onUserLeave) {
+              callbacksRef.current.onUserLeave(data.userId);
             }
             break;
 
           default:
-            console.log('[PartyKit] Unknown message type:', (data as any).type);
+            break;
         }
       } catch (err) {
         console.error('[PartyKit] Error parsing message:', err);
       }
     };
 
-    socket.onerror = (err) => {
-      console.error('[PartyKit] WebSocket error:', err);
-      setError(new Error('WebSocket connection error'));
+    socket.onerror = () => {
+      setError((prev) => prev ?? new Error('WebSocket connection error'));
       setIsConnected(false);
       setIsConnecting(false);
     };
 
     socket.onclose = () => {
-      console.log('[PartyKit] Disconnected');
       setIsConnected(false);
       setIsConnecting(false);
+      setCurrentConnectionId(null);
+      if (!kickedMessageRef.current) {
+        setConnectionRole(null);
+      }
     };
 
-    // Send leave message before page refresh/close
+    const heartbeatInterval = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        const heartbeat: Message = {
+          type: 'presence:update',
+          user: {
+            ...userPresenceRef.current,
+            lastActive: Date.now(),
+          },
+          timestamp: Date.now(),
+        };
+        socket.send(JSON.stringify(heartbeat));
+      }
+    }, 20000);
+
     const handleBeforeUnload = () => {
       if (socket.readyState === WebSocket.OPEN) {
         const leaveMessage: Message = {
@@ -235,34 +282,27 @@ export function usePartyKit({
           userId,
           timestamp: Date.now(),
         };
-        // Use sendBeacon for reliable delivery during page unload
         const blob = new Blob([JSON.stringify(leaveMessage)], { type: 'application/json' });
-        navigator.sendBeacon(`${PARTY_KIT_PROTOCOL}://${PARTY_KIT_HOST}/party/${room}`, blob);
+        const roomUrl = `${PARTYKIT_HTTP_PROTOCOL}://${PARTYKIT_HOST}${socket.roomUrl.replace(/^wss?:\/\/[^/]+/, '')}`;
+        navigator.sendBeacon(roomUrl, blob);
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
-    // Cleanup
     return () => {
+      window.clearInterval(heartbeatInterval);
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      // Send leave message before closing (for component unmount)
-      if (socket.readyState === WebSocket.OPEN) {
-        const leaveMessage: Message = {
-          type: 'user:leave',
-          userId,
-          timestamp: Date.now(),
-        };
-        socket.send(JSON.stringify(leaveMessage));
-      }
       socket.close();
       socketRef.current = null;
     };
-  }, [sessionId, userId]);
+  }, [
+    adminToken,
+    sessionId,
+    userId,
+  ]);
 
-  // Send card create
   const sendCardCreate = useCallback((card: CardData) => {
-    console.log('[PartyKit] Attempting to send card:create', card.id, 'Socket state:', socketRef.current?.readyState);
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
         type: 'card:create',
@@ -271,13 +311,9 @@ export function usePartyKit({
         userId,
       };
       socketRef.current.send(JSON.stringify(message));
-      console.log('[PartyKit] Sent card:create', card.id);
-    } else {
-      console.warn('[PartyKit] Socket not open, cannot send card:create. State:', socketRef.current?.readyState);
     }
   }, [userId]);
 
-  // Send card update
   const sendCardUpdate = useCallback((cardId: string, updates: Partial<CardData>) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -291,7 +327,6 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Send card delete
   const sendCardDelete = useCallback((cardId: string) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -304,7 +339,6 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Send card reorder
   const sendCardReorder = useCallback((section: string, cardIds: string[]) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -318,7 +352,6 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Send connection create
   const sendConnectionCreate = useCallback((connection: { id: string; from: string; to: string }) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -331,7 +364,6 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Send connection delete
   const sendConnectionDelete = useCallback((connectionId: string) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -344,20 +376,21 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Send presence update
   const sendPresenceUpdate = useCallback((updates: Partial<UserPresence>) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       userPresenceRef.current = { ...userPresenceRef.current, ...updates };
       const message: Message = {
         type: 'presence:update',
-        user: userPresenceRef.current,
+        user: {
+          ...userPresenceRef.current,
+          lastActive: Date.now(),
+        },
         timestamp: Date.now(),
       };
       socketRef.current.send(JSON.stringify(message));
     }
   }, []);
 
-  // Send cursor move (throttled)
   const sendCursorMove = useCallback((x: number, y: number) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       const message: Message = {
@@ -371,10 +404,21 @@ export function usePartyKit({
     }
   }, [userId]);
 
-  // Reconnect - PartySocket handles reconnection automatically
-  // This is just for manual reconnection if needed
+  const sendAdminKick = useCallback((connectionId: string, kickedUserId?: string | null) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      const message: Message = {
+        type: 'admin:kick',
+        connectionId,
+        userId: kickedUserId ?? undefined,
+        timestamp: Date.now(),
+      };
+      socketRef.current.send(JSON.stringify(message));
+    }
+  }, []);
+
   const reconnect = useCallback(() => {
     if (socketRef.current) {
+      kickedMessageRef.current = null;
       socketRef.current.reconnect();
     }
   }, []);
@@ -384,6 +428,9 @@ export function usePartyKit({
     isConnecting,
     error,
     users,
+    liveConnections,
+    currentConnectionId,
+    connectionRole,
     sendCardCreate,
     sendCardUpdate,
     sendCardDelete,
@@ -392,6 +439,7 @@ export function usePartyKit({
     sendConnectionDelete,
     sendPresenceUpdate,
     sendCursorMove,
+    sendAdminKick,
     reconnect,
   };
 }

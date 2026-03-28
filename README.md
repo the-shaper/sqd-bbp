@@ -25,7 +25,7 @@ For real-time multiplayer collaboration, you need to run **two servers** simulta
 
 **Terminal 1 - PartyKit (WebSocket Server):**
 ```bash
-npx partykit dev --config partykit.json
+npm run partykit:dev
 ```
 
 **Terminal 2 - Express (API + Frontend):**
@@ -48,7 +48,7 @@ npm run dev
    localStorage.clear()
    location.reload()
    ```
-3. **Restart Terminal 1:** `npx partykit dev --config partykit.json`
+3. **Restart Terminal 1:** `npm run partykit:dev`
 4. **Restart Terminal 2:** `npm run dev`
 
 **Quick Restart Script (optional):**
@@ -58,7 +58,7 @@ Create a `restart.sh` file:
 pkill -f "partykit dev"
 pkill -f "tsx server.ts"
 sleep 1
-npx partykit dev --config partykit.json &
+npm run partykit:dev &
 npm run dev
 ```
 

@@ -5,7 +5,7 @@
 ### 1. Start PartyKit Server (Terminal 1)
 
 ```bash
-npx partykit dev --config partykit.json
+npm run partykit:dev
 ```
 
 **Expected output:**
@@ -223,6 +223,34 @@ Both should return JSON responses (Express may return empty array `[]` if no ses
 
 ## Browser Developer Tools Testing
 
+### When Multiplayer Looks Dead But The App Says Connected
+
+Use this checklist whenever you see `Only you`, stale avatars, or admin session control says `WebSocket connection error`:
+
+1. Check which port PartyKit is actually using.
+   - Run `lsof -i :1999`
+   - You want to see `workerd` or PartyKit listening on `1999`
+   - If PartyKit starts on a random port like `63429`, the browser and backend are talking to the wrong server
+
+2. Clear out any old `workerd` or `partykit dev` process before restarting.
+   - `pkill -f "partykit dev"`
+   - If needed, `kill -9 <pid>` on the stale `workerd`
+   - Then restart with `npm run partykit:dev`
+
+3. Confirm both sides are pointed at the same realtime host.
+   - Browser client should use `VITE_PARTYKIT_HOST=localhost:1999`
+   - Express should use `PARTYKIT_HOST=localhost:1999`
+
+4. Make sure admin and guest are not sharing the same saved profile.
+   - Admin and guest should be different identities
+   - If you test in one browser profile, clear `bbp_user_profile` and `bbp_user_id`
+   - Best practice: use a separate browser profile or private/incognito window for the guest
+
+5. Look at the PartyKit terminal, not just the browser console.
+   - You should see the room start on `1999`
+   - When clients join, the room should emit live snapshot/presence logs
+   - If the browser says `Connected` but PartyKit shows nothing, the browser is not reaching the active PartyKit server
+
 ### Check WebSocket Connection
 
 **Chrome/Firefox:**
@@ -274,7 +302,7 @@ curl http://localhost:1999/health
 
 **Fix:**
 1. Check Terminal 1 - PartyKit should be running
-2. Restart PartyKit: `npx partykit dev --config partykit.json`
+2. Restart PartyKit: `npm run partykit:dev`
 3. Refresh browser
 
 ### Issue 2: Changes Not Syncing
@@ -444,7 +472,7 @@ Once all tests pass:
 **Start development:**
 ```bash
 # Terminal 1 - PartyKit
-npx partykit dev --config partykit.json
+npm run partykit:dev
 
 # Terminal 2 - Express
 npm run dev

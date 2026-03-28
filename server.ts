@@ -9,6 +9,8 @@ import archiver from "archiver";
 import fs from "fs";
 import path from "path";
 
+const PARTYKIT_HOST = process.env.PARTYKIT_HOST || "localhost:1999";
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -107,6 +109,17 @@ async function startServer() {
       res.json({ isAuthenticated });
     } catch (error: any) {
       console.error("Admin check error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/admin/partykit-token", admin.requireAdminAuth, (req, res) => {
+    try {
+      const session = (req as any).adminSession as admin.AdminSession;
+      const token = admin.createPartyKitAdminToken(session.id);
+      res.json({ token, partykitHost: PARTYKIT_HOST });
+    } catch (error: any) {
+      console.error("Admin PartyKit token error:", error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -702,4 +715,3 @@ async function startServer() {
 }
 
 startServer();
-

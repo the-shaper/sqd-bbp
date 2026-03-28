@@ -4,10 +4,13 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import db from './db';
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'shazam!';
 const SESSION_DURATION_HOURS = 8;
+const PARTYKIT_ADMIN_SECRET = process.env.PARTYKIT_ADMIN_SECRET || ADMIN_PASSWORD;
+const PARTYKIT_TOKEN_DURATION_MS = 15 * 60 * 1000;
 
 export interface AdminSession {
   id: string;
@@ -56,6 +59,21 @@ export function cleanupExpiredSessions(): void {
 
 export function verifyAdminPassword(password: string): boolean {
   return password === ADMIN_PASSWORD;
+}
+
+export function createPartyKitAdminToken(sessionId: string): string {
+  const payload = {
+    role: 'admin',
+    sessionId,
+    exp: Date.now() + PARTYKIT_TOKEN_DURATION_MS,
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', PARTYKIT_ADMIN_SECRET)
+    .update(encodedPayload)
+    .digest('base64url');
+
+  return `${encodedPayload}.${signature}`;
 }
 
 // Express middleware to check admin authentication

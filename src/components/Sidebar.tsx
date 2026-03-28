@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { ChevronDown, Cpu, Plus, Trash2, FolderOpen, Lock, Unlock, Download, LogOut, Shield } from 'lucide-react';
 import { ModelType } from '../services/ai';
+import type { LiveConnection } from '../../party/index';
 
 interface Session {
   id: string;
@@ -34,6 +35,10 @@ interface SidebarProps {
   onExportSession?: (format: 'zip' | 'markdown' | 'json') => void;
   onLogout?: () => void;
   onEditRequest?: () => void;
+  activeConnections?: LiveConnection[];
+  currentConnectionId?: string;
+  onKickUser?: (connectionId: string, userId?: string | null) => Promise<void>;
+  presenceDebug?: string;
 }
 
 export default function Sidebar({ 
@@ -50,7 +55,11 @@ export default function Sidebar({
   onLoadSession,
   onExportSession,
   onLogout,
-  onEditRequest
+  onEditRequest,
+  activeConnections = [],
+  currentConnectionId = '',
+  onKickUser,
+  presenceDebug
 }: SidebarProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
@@ -83,6 +92,14 @@ export default function Sidebar({
       onLoadSession(sessionId);
     }
   };
+
+  const visibleConnections = Array.from(
+    new Map(
+      activeConnections
+        .filter(entry => entry.connectionId !== currentConnectionId && entry.role !== 'admin')
+        .map(entry => [entry.connectionId, entry])
+    ).values()
+  );
 
   return (
     <div className="w-72 bg-white border-r border-gray-200 flex flex-col shrink-0">
@@ -183,6 +200,92 @@ export default function Sidebar({
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Admin-only: Session Control */}
+        {isAdmin && currentSession && (
+          <div className="border-b border-gray-200 bg-white">
+            <div className="px-4 py-3 flex items-center justify-between font-semibold text-gray-900">
+              <div className="flex items-center gap-2">
+                <Shield size={18} className="text-indigo-600" />
+                Session Control
+              </div>
+              <span className="text-xs font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                {visibleConnections.length} live
+              </span>
+            </div>
+
+            <div className="px-3 pb-3">
+              {visibleConnections.length === 0 ? (
+                <div className="px-3 py-3 text-sm text-gray-500 bg-gray-50 rounded-lg">
+                  No other active players right now.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {visibleConnections.map((entry) => (
+                    <div
+                      key={entry.connectionId}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
+                        entry.isActive 
+                          ? 'bg-gray-50 border-gray-100' 
+                          : 'bg-gray-100/60 border-gray-200 opacity-60'
+                      }`}
+                    >
+                      <div className="relative shrink-0">
+                        <div
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm"
+                          style={{ backgroundColor: entry.color }}
+                          title={entry.name}
+                        >
+                          {entry.name.charAt(0).toUpperCase()}
+                        </div>
+                        {/* Active/inactive indicator dot */}
+                        <div
+                          className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
+                            entry.isActive
+                              ? 'bg-green-500 animate-pulse'
+                              : 'bg-gray-400'
+                          }`}
+                          title={entry.isActive ? 'Active' : 'Inactive'}
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {entry.name}
+                          {!entry.isActive && (
+                            <span className="ml-1.5 text-[10px] font-normal text-gray-400">(inactive)</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 font-mono truncate">
+                          {entry.userId || 'no-user-id'}
+                        </div>
+                        <div className="text-[11px] text-gray-400 font-mono truncate">
+                          {entry.connectionId}
+                        </div>
+                      </div>
+                      {onKickUser && (
+                        <button
+                          onClick={() => onKickUser(entry.connectionId, entry.userId)}
+                          className="px-2 py-1 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                          title="Disconnect player"
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                  Debug trace
+                </div>
+                <div className="text-xs text-gray-600 font-mono whitespace-pre-wrap break-words">
+                  {presenceDebug || 'No debug info yet'}
+                </div>
+              </div>
             </div>
           </div>
         )}

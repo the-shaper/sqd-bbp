@@ -4,6 +4,8 @@ import { COLUMNS } from '../data';
 import { CardData } from '../types';
 import { motion } from 'motion/react';
 import InfiniteCanvas from './InfiniteCanvas';
+import { UserCursors } from './UserPresence';
+import type { UserPresence } from '../../party/index';
 import { generateSingleIdea, generateTransformationStory, ModelType } from '../services/ai';
 
 interface CanvasProps {
@@ -25,6 +27,8 @@ interface CanvasProps {
   onCardReorder?: (section: string, cardIds: string[]) => Promise<void>;
   onConnectionCreate?: (from: string, to: string) => Promise<void>;
   onConnectionDelete?: (connectionId: string) => Promise<void>;
+  activeUsers?: UserPresence[];
+  currentUserId?: string;
 }
 
 interface ConnectionLineProps {
@@ -88,7 +92,7 @@ const ConnectionLine: React.FC<ConnectionLineProps> = ({ startId, endId, isDrawi
   );
 }
 
-export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel, isEditMode, currentSession, onEditRequest, onCardUpdate, onCardAdd, onCursorMove, connections = [], onCardDelete, onCardReorder, onConnectionCreate, onConnectionDelete }: CanvasProps) {
+export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel, isEditMode, currentSession, onEditRequest, onCardUpdate, onCardAdd, onCursorMove, connections = [], onCardDelete, onCardReorder, onConnectionCreate, onConnectionDelete, activeUsers = [], currentUserId = '' }: CanvasProps) {
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
   const [dragOverColId, setDragOverColId] = useState<string | null>(null);
@@ -419,7 +423,9 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
       const container = document.getElementById('canvas-container');
       if (container) {
         const rect = container.getBoundingClientRect();
-        onCursorMove(e.clientX - rect.left, e.clientY - rect.top);
+        const x = (e.clientX - rect.left - pan.x) / scale;
+        const y = (e.clientY - rect.top - pan.y) / scale;
+        onCursorMove(x, y);
       }
     }
   };
@@ -470,6 +476,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
           className="bg-white rounded-[32px] shadow-sm border border-gray-200 p-12 inline-block min-w-max relative"
           data-pan-target="true"
         >
+          <UserCursors users={activeUsers} currentUserId={currentUserId} />
           {/* Render established connections */}
           {connections.map(conn => (
             <ConnectionLine key={conn.id} startId={`node-right-${conn.from}`} endId={`node-left-${conn.to}`} />

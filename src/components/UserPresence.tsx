@@ -7,7 +7,12 @@ interface ActiveUsersProps {
 }
 
 export function ActiveUsers({ users, currentUserId }: ActiveUsersProps) {
-  if (users.length === 0) {
+  const uniqueUsers = Array.from(
+    new Map(users.filter(user => user.id !== currentUserId).map(user => [user.id, user])).values()
+  );
+  const totalActive = currentUserId ? uniqueUsers.length + 1 : uniqueUsers.length;
+
+  if (uniqueUsers.length === 0) {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-500">
         <div className="w-2 h-2 rounded-full bg-gray-300" />
@@ -20,23 +25,28 @@ export function ActiveUsers({ users, currentUserId }: ActiveUsersProps) {
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-2 text-sm text-gray-500">
         <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-        <span>{users.length + 1} active</span>
+        <span>{totalActive} active</span>
       </div>
       
       <div className="flex -space-x-2">
-        {users.slice(0, 4).map((user) => (
-          <div
-            key={user.id}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white shadow-sm"
-            style={{ backgroundColor: user.color }}
-            title={user.name}
-          >
-            {user.name.charAt(0).toUpperCase()}
+        {uniqueUsers.slice(0, 4).map((user) => (
+          <div key={user.id} className="group relative">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white shadow-sm"
+              style={{ backgroundColor: user.color }}
+            >
+              {user.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="pointer-events-none absolute left-1/2 top-full mt-2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50">
+              <div className="whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[11px] font-medium text-white shadow-lg">
+                {user.name}
+              </div>
+            </div>
           </div>
         ))}
-        {users.length > 4 && (
+        {uniqueUsers.length > 4 && (
           <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold border-2 border-white">
-            +{users.length - 4}
+            +{uniqueUsers.length - 4}
           </div>
         )}
       </div>
@@ -47,7 +57,6 @@ export function ActiveUsers({ users, currentUserId }: ActiveUsersProps) {
 interface UserCursorsProps {
   users: UserPresence[];
   currentUserId: string;
-  containerRef?: React.RefObject<HTMLElement>;
 }
 
 export function UserCursors({ users, currentUserId }: UserCursorsProps) {
@@ -67,7 +76,7 @@ function UserCursor({ user }: { user: UserPresence }) {
 
   return (
     <div
-      className="absolute transition-all duration-100 ease-out"
+      className="absolute"
       style={{
         left: user.cursor.x,
         top: user.cursor.y,
@@ -106,9 +115,10 @@ function UserCursor({ user }: { user: UserPresence }) {
 interface ConnectionStatusProps {
   isConnected: boolean;
   isConnecting: boolean;
+  message?: string;
 }
 
-export function ConnectionStatus({ isConnected, isConnecting }: ConnectionStatusProps) {
+export function ConnectionStatus({ isConnected, isConnecting, message }: ConnectionStatusProps) {
   if (isConnecting) {
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-100 text-yellow-800 rounded-full text-sm">
@@ -122,7 +132,7 @@ export function ConnectionStatus({ isConnected, isConnecting }: ConnectionStatus
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 bg-red-100 text-red-800 rounded-full text-sm">
         <div className="w-2 h-2 rounded-full bg-red-500" />
-        <span>Disconnected</span>
+        <span>{message || 'Disconnected'}</span>
       </div>
     );
   }

@@ -13,10 +13,10 @@ import Canvas from './components/Canvas';
 import LoginPage from './components/LoginPage';
 import PasswordModal from './components/PasswordModal';
 import SessionPasswordWall from './components/SessionPasswordWall';
-import { UserProfilePrompt, getUserProfile, UserProfile } from './components/UserProfilePrompt';
-import { ActiveUsers, ConnectionStatus, UserCursors } from './components/UserPresence';
+import { UserProfilePrompt, UserProfile } from './components/UserProfilePrompt';
+import { ActiveUsers, ConnectionStatus } from './components/UserPresence';
 import { usePartyKit } from './hooks/usePartyKit';
-import type { UserPresence } from '../party/index';
+import type { LiveConnection } from '../party/index';
 import { CardData } from './types';
 import { INITIAL_CARDS } from './data';
 import { generateCards, ModelType } from './services/ai';
@@ -503,6 +503,8 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelType>('minimax-m2.5');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [adminPartyKitToken, setAdminPartyKitToken] = useState<string | null>(null);
+  const [presenceDebug, setPresenceDebug] = useState<string>('Presence not loaded yet');
 
   // PartyKit / Multiplayer state
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -511,12 +513,36 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
   // Load or create user profile on mount
   useEffect(() => {
     if (isAdmin) {
-      // For admins: create profile automatically (persists across admin sessions)
-      const adminProfile: UserProfile = {
-        id: 'admin_' + Math.random().toString(36).substr(2, 9),
-        name: 'Admin',
-        color: '#EF4444', // Red color for admins
-      };
+      // For admins: reuse existing profile or create one with a stable ID
+      const existingProfile = localStorage.getItem('bbp_user_profile');
+      let adminProfile: UserProfile;
+      if (existingProfile) {
+        try {
+          const parsed = JSON.parse(existingProfile);
+          // Reuse if it's an admin profile, otherwise create new
+          if (parsed.id && parsed.id.startsWith('admin_')) {
+            adminProfile = parsed;
+          } else {
+            adminProfile = {
+              id: 'admin_' + Math.random().toString(36).substr(2, 9),
+              name: 'Admin',
+              color: '#EF4444',
+            };
+          }
+        } catch {
+          adminProfile = {
+            id: 'admin_' + Math.random().toString(36).substr(2, 9),
+            name: 'Admin',
+            color: '#EF4444',
+          };
+        }
+      } else {
+        adminProfile = {
+          id: 'admin_' + Math.random().toString(36).substr(2, 9),
+          name: 'Admin',
+          color: '#EF4444',
+        };
+      }
       localStorage.setItem('bbp_user_profile', JSON.stringify(adminProfile));
       localStorage.setItem('bbp_user_id', adminProfile.id);
       setUserProfile(adminProfile);
@@ -525,7 +551,15 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       const storedProfile = localStorage.getItem('bbp_user_profile');
       if (storedProfile) {
         try {
-          setUserProfile(JSON.parse(storedProfile));
+          const parsed = JSON.parse(storedProfile);
+          if (parsed?.id?.startsWith('admin_')) {
+            localStorage.removeItem('bbp_user_profile');
+            localStorage.removeItem('bbp_user_id');
+            setUserProfile(null);
+            setShowProfilePrompt(true);
+          } else {
+            setUserProfile(parsed);
+          }
         } catch (e) {
           localStorage.removeItem('bbp_user_profile');
           localStorage.removeItem('bbp_user_id');
@@ -545,11 +579,59 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     window.location.href = '/';
   };
 
+  const shouldConnectPartyKit = !!sessionId && !!userProfile;
+  const canConnectPartyKit = shouldConnectPartyKit && (!isAdmin || !!adminPartyKitToken);
+  const partySessionId = shouldConnectPartyKit ? (sessionId || null) : null;
+  const partyUserId = userProfile?.id || '';
+  const partyUserName = userProfile?.name || '';
+  const partyUserColor = userProfile?.color || '#3B82F6';
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 5000);
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin || !adminSessionId || !sessionId) {
+      setAdminPartyKitToken(null);
+      return;
+    }
+
+    const fetchAdminToken = async () => {
+      try {
+        const response = await fetch('/api/admin/partykit-token', {
+          method: 'POST',
+          headers: { 'x-admin-session': adminSessionId },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          setPresenceDebug(`Realtime auth error: ${response.status} ${errorText}`);
+          setAdminPartyKitToken(null);
+          return;
+        }
+
+        const data = await response.json();
+        setAdminPartyKitToken(data.token || null);
+      } catch (error) {
+        console.error('Error getting PartyKit admin token:', error);
+        setPresenceDebug(`Realtime auth error: ${error instanceof Error ? error.message : 'unknown error'}`);
+        setAdminPartyKitToken(null);
+      }
+    };
+
+    fetchAdminToken();
+  }, [adminSessionId, isAdmin, sessionId]);
+
   // Initialize PartyKit connection
   const {
     isConnected,
     isConnecting,
     users: activeUsers,
+    liveConnections,
+    currentConnectionId,
+    connectionRole,
+    error: partyKitError,
     sendCardCreate,
     sendCardUpdate,
     sendCardDelete,
@@ -558,11 +640,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     sendConnectionDelete,
     sendCursorMove,
     sendPresenceUpdate,
+    sendAdminKick,
   } = usePartyKit({
-    sessionId: sessionId || null,
-    userId: userProfile?.id || 'anonymous',
-    userName: userProfile?.name || 'Anonymous',
-    userColor: userProfile?.color || '#3B82F6',
+    sessionId: canConnectPartyKit ? partySessionId : null,
+    userId: partyUserId,
+    userName: partyUserName,
+    userColor: partyUserColor,
+    adminToken: adminPartyKitToken,
     onCardCreate: (card) => {
       setCards((prev) => {
         // Avoid duplicates
@@ -603,6 +687,10 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     onConnectionDelete: (connectionId) => {
       setConnections((prev) => prev.filter((c) => c.id !== connectionId));
     },
+    onKicked: (message) => {
+      showToast(message);
+      setPresenceDebug(message);
+    },
   });
 
   const handleProfileSubmit = (profile: UserProfile) => {
@@ -624,6 +712,28 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       });
     }
   }, [isConnected, userProfile, sendPresenceUpdate]);
+
+  useEffect(() => {
+    if (partyKitError?.message) {
+      setPresenceDebug(partyKitError.message);
+      return;
+    }
+
+    if (isAdmin) {
+      if (connectionRole === 'admin') {
+        setPresenceDebug(`PartyKit live room state: ${liveConnections.length} connected entities`);
+      } else if (adminPartyKitToken && connectionRole === 'participant') {
+        setPresenceDebug('Admin realtime auth failed; connected without session control privileges');
+      } else if (isConnecting) {
+        setPresenceDebug('Connecting to PartyKit room...');
+      }
+      return;
+    }
+
+    if (isConnected) {
+      setPresenceDebug(`PartyKit live room state: ${liveConnections.length} connected entities`);
+    }
+  }, [adminPartyKitToken, connectionRole, isAdmin, isConnected, isConnecting, liveConnections.length, partyKitError]);
 
   // Load session
   useEffect(() => {
@@ -780,6 +890,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       console.error('Error verifying password:', error);
       return false;
     }
+  };
+
+  const handleKickUser = async (connectionId: string, userId?: string | null) => {
+    if (!isAdmin || connectionRole !== 'admin') return;
+
+    sendAdminKick(connectionId, userId);
+    showToast('Disconnect request sent');
   };
 
   const completeOnboarding = async () => {
@@ -1003,11 +1120,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     }
   };
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 5000);
-  };
-
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -1061,16 +1173,20 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         </div>
       )}
 
-      <Sidebar 
+        <Sidebar 
         onViewChange={() => {}} 
         currentView="canvas" 
         selectedModel={selectedModel} 
         onModelChange={setSelectedModel}
-        sessions={[]}
+        sessions={[]} 
         currentSession={currentSession}
         isEditMode={isEditMode}
         onLogout={() => {}}
         isAdmin={isAdmin}
+        activeConnections={liveConnections}
+        currentConnectionId={currentConnectionId || ''}
+        onKickUser={connectionRole === 'admin' ? handleKickUser : undefined}
+        presenceDebug={presenceDebug}
       />
 
       <div className="flex flex-col flex-1 min-w-0">
@@ -1089,7 +1205,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         >
           <div className="flex items-center gap-3">
             <ActiveUsers users={activeUsers} currentUserId={userProfile?.id || ''} />
-            <ConnectionStatus isConnected={isConnected} isConnecting={isConnecting} />
+            <ConnectionStatus isConnected={isConnected} isConnecting={isConnecting} message={partyKitError?.message} />
             {!isAdmin && (
               <button 
                 onClick={handleExitSession}
@@ -1144,9 +1260,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
                   onConnectionCreate={handleConnectionCreate}
                   onConnectionDelete={handleConnectionDelete}
                   onCursorMove={sendCursorMove}
-                />
-                <UserCursors
-                  users={activeUsers}
+                  activeUsers={activeUsers}
                   currentUserId={userProfile?.id || ''}
                 />
               </>
