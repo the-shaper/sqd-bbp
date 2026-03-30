@@ -621,6 +621,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     };
 
     fetchAdminToken();
+
+    // Refresh the token every 12 minutes (token TTL is 15 min)
+    const refreshInterval = window.setInterval(fetchAdminToken, 12 * 60 * 1000);
+
+    return () => {
+      window.clearInterval(refreshInterval);
+    };
   }, [adminSessionId, isAdmin, sessionId]);
 
   // Initialize PartyKit connection
@@ -1017,7 +1024,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       const newCard: CardData = {
         id: data.card.id,
         section: data.card.section,
-        content: data.card.content || '',
+        content: cardData.content || data.card.content || '',
         starred: data.card.starred || false,
         order: data.card.order_index
       };

@@ -405,7 +405,12 @@ async function startServer() {
         starred || false
       );
       
-      res.status(201).json({ card });
+      res.status(201).json({
+        card: {
+          ...card,
+          content: content || "",
+        }
+      });
     } catch (error: any) {
       console.error("Error creating card:", error);
       res.status(500).json({ error: error.message });
@@ -700,7 +705,12 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: ['**/data/**', '**/*.db', '**/*.db-wal', '**/*.db-shm', '**/*.db-journal'],
+        },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

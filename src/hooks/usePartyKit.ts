@@ -72,6 +72,7 @@ export function usePartyKit({
 
   const socketRef = useRef<PartySocket | null>(null);
   const kickedMessageRef = useRef<string | null>(null);
+  const adminTokenRef = useRef(adminToken);
   const callbacksRef = useRef({
     onCardCreate,
     onCardUpdate,
@@ -89,6 +90,10 @@ export function usePartyKit({
     color: userColor,
     lastActive: Date.now(),
   });
+
+  useEffect(() => {
+    adminTokenRef.current = adminToken;
+  }, [adminToken]);
 
   useEffect(() => {
     userPresenceRef.current = {
@@ -143,7 +148,7 @@ export function usePartyKit({
       room,
       party: PARTYKIT_PARTY,
       protocol: PARTYKIT_WS_PROTOCOL,
-      query: () => (adminToken ? { adminToken } : {}),
+      query: () => (adminTokenRef.current ? { adminToken: adminTokenRef.current } : {}),
     });
 
     socketRef.current = socket;
@@ -297,7 +302,6 @@ export function usePartyKit({
       socketRef.current = null;
     };
   }, [
-    adminToken,
     sessionId,
     userId,
   ]);
