@@ -533,9 +533,9 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                       `}
                     >
                       {/* Left Node (Incoming) */}
-                      <div 
+                      <div
                         id={`node-left-${card.id}`}
-                        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
+                        className="absolute left-0 top-1/2 z-10 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-transparent cursor-crosshair group"
                         title="Incoming connection (Double-click to break)" 
                         onPointerDown={(e) => {
                           e.stopPropagation();
@@ -565,12 +565,14 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                             incomingConns.forEach(conn => onConnectionDelete?.(conn.id));
                           }
                         }}
-                      />
+                      >
+                        <div className="h-4 w-4 rounded-full border-[3px] border-gray-400 bg-white shadow-sm transition-transform duration-150 group-hover:border-indigo-500 group-hover:scale-125" />
+                      </div>
                       
                       {/* Right Node (Outgoing) */}
-                      <div 
+                      <div
                         id={`node-right-${card.id}`}
-                        className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-4 h-4 bg-white border-[3px] border-gray-400 rounded-full z-10 hover:border-indigo-500 hover:scale-125 transition-transform shadow-sm cursor-crosshair" 
+                        className="absolute right-0 top-1/2 z-10 flex h-12 w-12 translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-transparent cursor-crosshair group"
                         title="Outgoing connection (Double-click to break)"
                         onPointerDown={(e) => {
                           e.stopPropagation();
@@ -596,7 +598,9 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                             outgoingConns.forEach(conn => onConnectionDelete?.(conn.id));
                           }
                         }}
-                      />
+                      >
+                        <div className="h-4 w-4 rounded-full border-[3px] border-gray-400 bg-white shadow-sm transition-transform duration-150 group-hover:border-indigo-500 group-hover:scale-125" />
+                      </div>
 
                       {!!card.starred && <Star size={14} className="absolute top-3 left-3 fill-gray-900 text-gray-900" />}
                       
