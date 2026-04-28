@@ -1,13 +1,20 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
+import { Type } from "@google/genai";
+import dotenv from "dotenv";
 import * as sessions from "./src/server/sessions";
 import * as cards from "./src/server/cards";
 import * as connections from "./src/server/connections";
 import * as fileUtils from "./src/server/files";
 import * as admin from "./src/server/admin";
+import { generateText, getAiConfig } from "./src/server/ai";
+import { extractAttachmentContent, type ProjectAttachment } from "./src/server/documents";
 import archiver from "archiver";
 import fs from "fs";
 import path from "path";
+
+dotenv.config({ path: ".env" });
+dotenv.config({ path: ".env.local", override: true });
 
 const PARTYKIT_HOST = process.env.PARTYKIT_HOST || "localhost:1999";
 
@@ -15,7 +22,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: "100mb" }));
   
   // Cleanup expired admin sessions periodically
   setInterval(() => {
@@ -27,34 +34,73 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  app.post("/api/opencode", async (req, res) => {
-    try {
-      const { prompt, model } = req.body;
-      const OPENCODE_API_KEY = "sk-pwn95V3tyj6pkFVFbGSLUyKKz4dF6n7TaLIcd4r9OQIfzEDgzAZ5q3XHrVfxiGet";
-      
-      const response = await fetch("https://opencode.ai/zen/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENCODE_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: model || "minimax-m2.5",
-          messages: [
-            { role: "user", content: prompt }
-          ]
-        })
-      });
+  app.get("/api/ai/config", (req, res) => {
+    res.json(getAiConfig());
+  });
 
-      if (!response.ok) {
-        const errorData = await response.text();
-        return res.status(response.status).json({ error: `Opencode API error: ${response.status} ${errorData}` });
+  app.post("/api/ai/complete", async (req, res) => {
+    try {
+      const { prompt, model, responseFormat } = req.body;
+      if (!prompt) {
+        return res.status(400).json({ error: "Prompt is required" });
       }
 
-      const data = await response.json();
-      res.json(data);
+      const text = await generateText({
+        prompt,
+        model: model || getAiConfig().defaultModel,
+        ...(responseFormat === "json"
+          ? {
+              responseMimeType: "application/json" as const,
+              responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    section: {
+                      type: Type.STRING,
+                      description: "Must be one of: place, role, challenge, point_a, point_b, change",
+                    },
+                    content: {
+                      type: Type.STRING,
+                      description: "The idea content.",
+                    },
+                  },
+                  required: ["section", "content"],
+                },
+              },
+            }
+          : {}),
+      });
+
+      res.json({ text });
     } catch (error: any) {
-      console.error("Opencode proxy error:", error);
+      console.error("AI completion error:", error);
+      res.status(500).json({ error: error.message || "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/ai/chat", async (req, res) => {
+    try {
+      const { systemInstruction, history, message, model } = req.body;
+      if (!message) {
+        return res.status(400).json({ error: "Message is required" });
+      }
+
+      const text = await generateText({
+        model: model || getAiConfig().defaultModel,
+        systemInstruction,
+        history: Array.isArray(history)
+          ? history.map((entry) => ({
+              role: entry.role,
+              text: entry.parts?.[0]?.text || "",
+            }))
+          : [],
+        message,
+      });
+
+      res.json({ text });
+    } catch (error: any) {
+      console.error("AI chat error:", error);
       res.status(500).json({ error: error.message || "Internal Server Error" });
     }
   });
@@ -324,6 +370,103 @@ async function startServer() {
       res.json({ success });
     } catch (error: any) {
       console.error("Error updating session:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/sessions/:id/attachments", admin.requireAdminAuth, (req, res) => {
+    try {
+      const { id } = req.params;
+      const session = sessions.getSession(id);
+
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      const attachments = fileUtils.readAttachmentsIndex<ProjectAttachment>(id);
+      res.json({ attachments });
+    } catch (error: any) {
+      console.error("Error listing attachments:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/sessions/:id/attachments", admin.requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, mimeType, dataUrl } = req.body;
+      const session = sessions.getSession(id);
+
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      if (!name || !dataUrl) {
+        return res.status(400).json({ error: "Attachment name and dataUrl are required" });
+      }
+
+      const match = String(dataUrl).match(/^data:(.*?);base64,(.*)$/);
+      if (!match) {
+        return res.status(400).json({ error: "Invalid attachment payload" });
+      }
+
+      const [, detectedMimeType, base64Content] = match;
+      const buffer = Buffer.from(base64Content, "base64");
+      const saved = fileUtils.writeAttachmentFile(id, name, buffer);
+      const extracted = await extractAttachmentContent(saved.fullPath);
+
+      const attachment: ProjectAttachment = {
+        id: `attachment-${Date.now()}`,
+        name,
+        mimeType: mimeType || detectedMimeType || "application/octet-stream",
+        size: buffer.byteLength,
+        uploadedAt: new Date().toISOString(),
+        relativePath: saved.relativePath,
+        extractionStatus: extracted.extractionStatus,
+        extractedText: extracted.extractedText,
+        summary: extracted.summary,
+      };
+
+      const attachments = fileUtils.readAttachmentsIndex<ProjectAttachment>(id);
+      attachments.unshift(attachment);
+      fileUtils.writeAttachmentsIndex(id, attachments);
+
+      res.status(201).json({ attachment });
+    } catch (error: any) {
+      console.error("Error uploading attachment:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/sessions/:id/attachments/:attachmentId", admin.requireAdminAuth, (req, res) => {
+    try {
+      const { id, attachmentId } = req.params;
+      const session = sessions.getSession(id);
+
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      const attachments = fileUtils.readAttachmentsIndex<ProjectAttachment>(id);
+      const attachment = attachments.find((item) => item.id === attachmentId);
+
+      if (!attachment) {
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      const fullPath = path.join(process.cwd(), attachment.relativePath);
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+      }
+
+      fileUtils.writeAttachmentsIndex(
+        id,
+        attachments.filter((item) => item.id !== attachmentId)
+      );
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting attachment:", error);
       res.status(500).json({ error: error.message });
     }
   });

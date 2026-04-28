@@ -11,15 +11,16 @@ import RightPanel from './components/RightPanel';
 import NewProject from './components/NewProject';
 import Canvas from './components/Canvas';
 import LoginPage from './components/LoginPage';
-import PasswordModal from './components/PasswordModal';
 import SessionPasswordWall from './components/SessionPasswordWall';
 import { UserProfilePrompt, UserProfile } from './components/UserProfilePrompt';
 import { ActiveUsers, ConnectionStatus } from './components/UserPresence';
 import { usePartyKit } from './hooks/usePartyKit';
 import type { LiveConnection } from '../party/index';
-import { CardData } from './types';
-import { INITIAL_CARDS } from './data';
+import { CardData, ProjectAttachment } from './types';
 import { generateCards, ModelType } from './services/ai';
+import type { ProjectBackgroundApplyMode } from './components/chat/types';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import type { TutorialItem } from './tutorials';
 
 // Session types
 interface Session {
@@ -38,86 +39,16 @@ interface Session {
 export default function App() {
   return (
     <Router>
-      <AppRoutes />
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
     </Router>
   );
 }
 
 // Routes Component
 function AppRoutes() {
-  // Admin authentication state - start null, verify before trusting
-  const [adminSessionId, setAdminSessionId] = useState<string | null>(null);
-  const [isAdminVerified, setIsAdminVerified] = useState(false);
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-
-  // Verify admin session on every mount - security: don't trust localStorage alone
-  useEffect(() => {
-    const verifyAdminSession = async () => {
-      const storedSessionId = localStorage.getItem('adminSessionId');
-      
-      if (storedSessionId) {
-        try {
-          console.log('[Auth] Verifying admin session...');
-          const response = await fetch('/api/admin/check', {
-            headers: { 'x-admin-session': storedSessionId }
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data.isAuthenticated) {
-              console.log('[Auth] Admin session verified');
-              setAdminSessionId(storedSessionId);
-              setIsAdminVerified(true);
-            } else {
-              console.log('[Auth] Admin session invalid - clearing');
-              localStorage.removeItem('adminSessionId');
-              setAdminSessionId(null);
-              setIsAdminVerified(false);
-            }
-          } else {
-            console.log('[Auth] Admin check failed - clearing session');
-            localStorage.removeItem('adminSessionId');
-            setAdminSessionId(null);
-            setIsAdminVerified(false);
-          }
-        } catch (error) {
-          console.error('[Auth] Error verifying admin session:', error);
-          localStorage.removeItem('adminSessionId');
-          setAdminSessionId(null);
-          setIsAdminVerified(false);
-        }
-      } else {
-        console.log('[Auth] No stored admin session');
-        setIsAdminVerified(false);
-      }
-      
-      setIsCheckingAuth(false);
-    };
-    
-    verifyAdminSession();
-  }, []);
-
-  const handleLogin = (sessionId: string) => {
-    setAdminSessionId(sessionId);
-    setIsAdminVerified(true);
-  };
-
-  const handleLogout = async () => {
-    if (adminSessionId) {
-      try {
-        await fetch('/api/admin/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: adminSessionId })
-        });
-      } catch (error) {
-        console.error('Logout error:', error);
-      }
-    }
-    localStorage.removeItem('adminSessionId');
-    setAdminSessionId(null);
-    setIsAdminVerified(false);
-  };
+  const { isAdminVerified, isCheckingAuth } = useAuth();
 
   if (isCheckingAuth) {
     return (
@@ -132,69 +63,50 @@ function AppRoutes() {
 
   return (
     <Routes>
-      {/* Login route */}
       <Route 
         path="/login" 
         element={
-          adminSessionId ? (
+          isAdminVerified ? (
             <Navigate to="/" replace />
           ) : (
-            <LoginPage onLogin={handleLogin} />
+            <LoginPage />
           )
         } 
       />
       
-      {/* Admin dashboard */}
       <Route 
         path="/" 
         element={
           isAdminVerified ? (
-            <Dashboard 
-              adminSessionId={adminSessionId!} 
-              onLogout={handleLogout}
-            />
+            <Dashboard />
           ) : (
             <Navigate to="/login" replace />
           )
         } 
       />
       
-      {/* Session view (public - accessible to anyone with URL) */}
       <Route 
         path="/:sessionId" 
-        element={
-          <SessionView 
-            isAdmin={isAdminVerified}
-            adminSessionId={adminSessionId}
-          />
-        } 
+        element={<SessionView />}
       />
       
-      {/* Catch all */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
 
 // Admin Dashboard Component
-interface DashboardProps {
-  adminSessionId: string;
-  onLogout: () => void;
-}
-
-function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
+function Dashboard() {
+  const { adminSessionId, logout, handleExpiredAdminSession } = useAuth();
   const [allSessions, setAllSessions] = useState<Session[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [newSessionInfo, setNewSessionInfo] = useState<{id: string, name: string, password: string | null} | null>(null);
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const [sessionPasswords, setSessionPasswords] = useState<Record<string, string>>(() => {
-    // Load from localStorage on init
     const stored = localStorage.getItem('sessionPasswords');
     return stored ? JSON.parse(stored) : {};
   });
 
-  // Save passwords to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('sessionPasswords', JSON.stringify(sessionPasswords));
   }, [sessionPasswords]);
@@ -204,12 +116,17 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
     setTimeout(() => setToastMessage(null), 5000);
   };
 
-  // Load all sessions
   const loadSessions = useCallback(async () => {
     try {
       const response = await fetch('/api/sessions', {
-        headers: { 'x-admin-session': adminSessionId }
+        headers: { 'x-admin-session': adminSessionId! }
       });
+
+      if (response.status === 401) {
+        await handleExpiredAdminSession();
+        return;
+      }
+
       if (response.ok) {
         const data = await response.json();
         setAllSessions(data.sessions || []);
@@ -217,7 +134,7 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
     } catch (error) {
       console.error('Error loading sessions:', error);
     }
-  }, [adminSessionId]);
+  }, [adminSessionId, handleExpiredAdminSession]);
 
   useEffect(() => {
     loadSessions();
@@ -229,26 +146,26 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-admin-session': adminSessionId 
+          'x-admin-session': adminSessionId! 
         },
-        body: JSON.stringify({
-          name,
-          require_password: requirePassword
-        })
+        body: JSON.stringify({ name, require_password: requirePassword })
       });
+
+      if (response.status === 401) {
+        await handleExpiredAdminSession();
+        return;
+      }
 
       if (response.ok) {
         const data = await response.json();
         await loadSessions();
         
-        // Show the session info with password (if generated)
         setNewSessionInfo({
           id: data.session.id,
           name: data.session.name,
           password: data.session.password
         });
         
-        // Store password for later viewing in the list
         if (data.session.password) {
           setSessionPasswords(prev => ({
             ...prev,
@@ -271,8 +188,13 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE',
-        headers: { 'x-admin-session': adminSessionId }
+        headers: { 'x-admin-session': adminSessionId! }
       });
+
+      if (response.status === 401) {
+        await handleExpiredAdminSession();
+        return;
+      }
 
       if (response.ok) {
         await loadSessions();
@@ -292,7 +214,7 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
         sessions={allSessions}
         onCreateSession={createSession}
         onDeleteSession={deleteSession}
-        onLogout={onLogout}
+        onLogout={logout}
         isAdmin={true}
       />
       
@@ -300,7 +222,6 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
         <TopBar projectName="Admin Dashboard" />
         <div className="flex flex-1 overflow-hidden relative">
           <main className="flex-1 overflow-auto relative bg-gray-50/30 p-8">
-            {/* Toast */}
             {toastMessage && (
               <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] bg-red-500 text-white px-6 py-3 rounded-full shadow-lg font-medium flex items-center gap-2">
                 <span>{toastMessage}</span>
@@ -308,7 +229,6 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
               </div>
             )}
 
-            {/* New Session Modal */}
             {newSessionInfo && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
@@ -341,7 +261,7 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
 
                     {newSessionInfo.password && (
                       <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                        <label className="text-sm font-medium text-yellow-800 block mb-1">🔒 Session Password</label>
+                        <label className="text-sm font-medium text-yellow-800 block mb-1">Session Password</label>
                         <div className="flex items-center gap-2">
                           <code className="bg-white px-3 py-2 rounded text-lg font-mono font-bold text-yellow-900 flex-1">
                             {newSessionInfo.password}
@@ -373,7 +293,7 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
                         href={`/${newSessionInfo.id}`}
                         className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium text-center"
                       >
-                        Open Session →
+                        Open Session &rarr;
                       </a>
                     </div>
                   </div>
@@ -402,7 +322,7 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
                           {session.has_password ? (
                             <>
                               <span className="flex items-center gap-1">
-                                🔒 Password protected
+                                Password protected
                                 {sessionPasswords[session.id] ? (
                                   <>
                                     <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">
@@ -439,10 +359,10 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
                               </span>
                             </>
                           ) : (
-                            <span>🔓 Open session</span>
+                            <span>Open session</span>
                           )}
-                          <span>•</span>
-                          <span>{session.onboarding_completed ? '✅ Ready' : '⏳ Onboarding'}</span>
+                          <span>&bull;</span>
+                          <span>{session.onboarding_completed ? 'Ready' : 'Onboarding'}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -468,10 +388,10 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
             <div className="bg-indigo-50 rounded-xl p-6 border border-indigo-100">
               <h3 className="font-semibold text-indigo-900 mb-2">Quick Tips</h3>
               <ul className="text-sm text-indigo-800 space-y-1">
-                <li>• Create sessions from the sidebar with optional passwords</li>
-                <li>• Click "Open" to start the onboarding process</li>
-                <li>• Share session URLs with players: website.com/bdo-xxxx</li>
-                <li>• Sessions with passwords require players to enter it before viewing content</li>
+                <li>Create sessions from the sidebar with optional passwords</li>
+                <li>Click "Open" to start the onboarding process</li>
+                <li>Share session URLs with players: website.com/bdo-xxxx</li>
+                <li>Sessions with passwords require players to enter it before viewing content</li>
               </ul>
             </div>
           </main>
@@ -482,12 +402,8 @@ function Dashboard({ adminSessionId, onLogout }: DashboardProps) {
 }
 
 // Session View Component (for both admin and players)
-interface SessionViewProps {
-  isAdmin: boolean;
-  adminSessionId: string | null;
-}
-
-function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
+function SessionView() {
+  const { isAdminVerified, adminSessionId, handleExpiredAdminSession } = useAuth();
   const { sessionId } = useParams<{ sessionId: string }>();
 
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
@@ -498,28 +414,46 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
   const [showPasswordWall, setShowPasswordWall] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Project data for onboarding/canvas
   const [projectData, setProjectData] = useState({ client: '', background: '', notes: '' });
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelType>('minimax-m2.5');
+  const [attachments, setAttachments] = useState<ProjectAttachment[]>([]);
+  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activeTutorial, setActiveTutorial] = useState<TutorialItem | null>(null);
   const [adminPartyKitToken, setAdminPartyKitToken] = useState<string | null>(null);
   const [presenceDebug, setPresenceDebug] = useState<string>('Presence not loaded yet');
 
-  // PartyKit / Multiplayer state
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [showProfilePrompt, setShowProfilePrompt] = useState(false);
 
-  // Load or create user profile on mount
   useEffect(() => {
-    if (isAdmin) {
-      // For admins: reuse existing profile or create one with a stable ID
+    let cancelled = false;
+
+    const loadAiConfig = async () => {
+      try {
+        const response = await fetch('/api/ai/config');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled && typeof data.defaultModel === 'string' && data.defaultModel.trim()) {
+          setSelectedModel(data.defaultModel);
+        }
+      } catch (error) {
+        console.warn('Failed to load AI config:', error);
+      }
+    };
+
+    loadAiConfig();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (isAdminVerified) {
       const existingProfile = localStorage.getItem('bbp_user_profile');
       let adminProfile: UserProfile;
       if (existingProfile) {
         try {
           const parsed = JSON.parse(existingProfile);
-          // Reuse if it's an admin profile, otherwise create new
           if (parsed.id && parsed.id.startsWith('admin_')) {
             adminProfile = parsed;
           } else {
@@ -547,7 +481,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       localStorage.setItem('bbp_user_id', adminProfile.id);
       setUserProfile(adminProfile);
     } else {
-      // For guests: don't clear, check if they exist first to avoid name re-entry on refresh
       const storedProfile = localStorage.getItem('bbp_user_profile');
       if (storedProfile) {
         try {
@@ -571,7 +504,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         setShowProfilePrompt(true);
       }
     }
-  }, [isAdmin]);
+  }, [isAdminVerified]);
 
   const handleExitSession = () => {
     localStorage.removeItem('bbp_user_profile');
@@ -579,20 +512,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     window.location.href = '/';
   };
 
-  const shouldConnectPartyKit = !!sessionId && !!userProfile;
-  const canConnectPartyKit = shouldConnectPartyKit && (!isAdmin || !!adminPartyKitToken);
-  const partySessionId = shouldConnectPartyKit ? (sessionId || null) : null;
-  const partyUserId = userProfile?.id || '';
-  const partyUserName = userProfile?.name || '';
-  const partyUserColor = userProfile?.color || '#3B82F6';
-
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 5000);
   }, []);
 
   useEffect(() => {
-    if (!isAdmin || !adminSessionId || !sessionId) {
+    if (!isAdminVerified || !adminSessionId || !sessionId) {
       setAdminPartyKitToken(null);
       return;
     }
@@ -603,6 +529,12 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
           method: 'POST',
           headers: { 'x-admin-session': adminSessionId },
         });
+
+        if (response.status === 401) {
+          await handleExpiredAdminSession();
+          setAdminPartyKitToken(null);
+          return;
+        }
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -621,16 +553,20 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     };
 
     fetchAdminToken();
-
-    // Refresh the token every 12 minutes (token TTL is 15 min)
     const refreshInterval = window.setInterval(fetchAdminToken, 12 * 60 * 1000);
 
     return () => {
       window.clearInterval(refreshInterval);
     };
-  }, [adminSessionId, isAdmin, sessionId]);
+  }, [adminSessionId, isAdminVerified, handleExpiredAdminSession, sessionId]);
 
-  // Initialize PartyKit connection
+  const shouldConnectPartyKit = !!sessionId && !!userProfile;
+  const canConnectPartyKit = shouldConnectPartyKit && (!isAdminVerified || !!adminPartyKitToken);
+  const partySessionId = shouldConnectPartyKit ? sessionId : null;
+  const partyUserId = userProfile?.id || '';
+  const partyUserName = userProfile?.name || '';
+  const partyUserColor = userProfile?.color || '#3B82F6';
+
   const {
     isConnected,
     isConnecting,
@@ -656,7 +592,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     adminToken: adminPartyKitToken,
     onCardCreate: (card) => {
       setCards((prev) => {
-        // Avoid duplicates
         if (prev.find((c) => c.id === card.id)) return prev;
         return [...prev, card];
       });
@@ -707,10 +642,8 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     setShowProfilePrompt(false);
   };
 
-  // Update presence when user profile changes (for admins or when guest enters name)
   useEffect(() => {
     if (isConnected && userProfile && sendPresenceUpdate) {
-      console.log('[App] Updating presence with user profile:', userProfile);
       sendPresenceUpdate({
         id: userProfile.id,
         name: userProfile.name,
@@ -726,7 +659,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       return;
     }
 
-    if (isAdmin) {
+    if (isAdminVerified) {
       if (connectionRole === 'admin') {
         setPresenceDebug(`PartyKit live room state: ${liveConnections.length} connected entities`);
       } else if (adminPartyKitToken && connectionRole === 'participant') {
@@ -740,9 +673,24 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     if (isConnected) {
       setPresenceDebug(`PartyKit live room state: ${liveConnections.length} connected entities`);
     }
-  }, [adminPartyKitToken, connectionRole, isAdmin, isConnected, isConnecting, liveConnections.length, partyKitError]);
+  }, [adminPartyKitToken, connectionRole, isAdminVerified, isConnected, isConnecting, liveConnections.length, partyKitError]);
 
-  // Load session
+  const loadAttachments = async (targetSessionId: string) => {
+    if (!isAdminVerified || !adminSessionId) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${targetSessionId}/attachments`, {
+        headers: { 'x-admin-session': adminSessionId }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAttachments(data.attachments || []);
+      }
+    } catch (error) {
+      console.error('Error loading attachments:', error);
+    }
+  };
+
   useEffect(() => {
     if (!sessionId) return;
     
@@ -754,23 +702,20 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
           const data = await response.json();
           setCurrentSession(data.session);
           
-          // If admin, auto-grant access
-          if (isAdmin) {
+          if (isAdminVerified) {
             setIsEditMode(true);
             setCards(data.cards || []);
             setConnections(data.connections || []);
+            await loadAttachments(sessionId);
             setProjectData({
-              client: data.session.project_client || '',
+              client: data.session.project_client || data.session.name || '',
               background: data.session.project_background || '',
               notes: data.session.project_notes || ''
             });
           } else {
-            // For players, check if password is required
             if (data.session.has_password) {
-              // Check for saved password
               const savedPassword = sessionStorage.getItem(`session_${sessionId}_password`);
               if (savedPassword) {
-                // Verify it
                 const verifyResponse = await fetch(`/api/sessions/${sessionId}/verify`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -783,28 +728,25 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
                     setCards(data.cards || []);
                     setConnections(data.connections || []);
                     setProjectData({
-                      client: data.session.project_client || '',
+                      client: data.session.project_client || data.session.name || '',
                       background: data.session.project_background || '',
                       notes: data.session.project_notes || ''
                     });
                   } else {
-                    // Invalid saved password, show wall
                     setShowPasswordWall(true);
                   }
                 } else {
                   setShowPasswordWall(true);
                 }
               } else {
-                // No saved password, show wall
                 setShowPasswordWall(true);
               }
             } else {
-              // No password required, show content
               setIsEditMode(true);
               setCards(data.cards || []);
               setConnections(data.connections || []);
               setProjectData({
-                client: data.session.project_client || '',
+                client: data.session.project_client || data.session.name || '',
                 background: data.session.project_background || '',
                 notes: data.session.project_notes || ''
               });
@@ -822,30 +764,25 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     };
     
     loadSession();
-  }, [sessionId, isAdmin]);
+  }, [sessionId, isAdminVerified, adminSessionId]);
 
-  // Poll for session updates when guest is waiting for onboarding
   useEffect(() => {
-    if (!sessionId || isAdmin) return;
+    if (!sessionId || isAdminVerified) return;
     if (currentSession?.onboarding_completed) return;
     if (showPasswordWall) return;
 
-    // Poll every 3 seconds to check if onboarding is complete
     const interval = setInterval(async () => {
       try {
         const response = await fetch(`/api/sessions/${sessionId}`);
         if (response.ok) {
           const data = await response.json();
-          
-          // Update session data
           setCurrentSession(data.session);
           
-          // If onboarding just completed, load the cards and connections
           if (data.session.onboarding_completed && !currentSession?.onboarding_completed) {
             setCards(data.cards || []);
             setConnections(data.connections || []);
             setProjectData({
-              client: data.session.project_client || '',
+              client: data.session.project_client || data.session.name || '',
               background: data.session.project_background || '',
               notes: data.session.project_notes || ''
             });
@@ -858,7 +795,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [sessionId, isAdmin, currentSession?.onboarding_completed, showPasswordWall]);
+  }, [sessionId, isAdminVerified, currentSession?.onboarding_completed, showPasswordWall]);
 
   const verifyPassword = async (password: string): Promise<boolean> => {
     if (!sessionId) return false;
@@ -877,14 +814,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
           setShowPasswordWall(false);
           sessionStorage.setItem(`session_${sessionId}_password`, password);
           
-          // Load session data now that we have access
           const sessionResponse = await fetch(`/api/sessions/${sessionId}`);
           if (sessionResponse.ok) {
             const data = await sessionResponse.json();
             setCards(data.cards || []);
             setConnections(data.connections || []);
             setProjectData({
-              client: data.session.project_client || '',
+              client: data.session.project_client || data.session.name || '',
               background: data.session.project_background || '',
               notes: data.session.project_notes || ''
             });
@@ -900,14 +836,13 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
   };
 
   const handleKickUser = async (connectionId: string, userId?: string | null) => {
-    if (!isAdmin || connectionRole !== 'admin') return;
-
+    if (!isAdminVerified || connectionRole !== 'admin') return;
     sendAdminKick(connectionId, userId);
     showToast('Disconnect request sent');
   };
 
   const completeOnboarding = async () => {
-    if (!sessionId || !isAdmin) return;
+    if (!sessionId || !isAdminVerified) return;
     
     try {
       const response = await fetch(`/api/sessions/${sessionId}/complete-onboarding`, {
@@ -927,9 +862,9 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
   };
 
   const handleStartProject = async () => {
-    if (!sessionId || !isAdmin) return;
+    if (!sessionId || !isAdminVerified) return;
     
-    if (!projectData.client && !projectData.background) {
+    if (!currentSession?.name && !projectData.background) {
       await completeOnboarding();
       return;
     }
@@ -937,13 +872,12 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     setIsGenerating(true);
     try {
       const generatedCards = await generateCards(
-        projectData.client, 
+        projectData.client || currentSession?.name || '', 
         projectData.background, 
         projectData.notes, 
         selectedModel
       );
       
-      // Create cards via API
       for (const card of generatedCards) {
         await fetch(`/api/sessions/${sessionId}/cards`, {
           method: 'POST',
@@ -959,7 +893,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         });
       }
       
-      // Reload session to get new cards
       const response = await fetch(`/api/sessions/${sessionId}`);
       if (response.ok) {
         const data = await response.json();
@@ -975,7 +908,121 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     }
   };
 
-  // Update a card via API and broadcast
+  const handleUploadFiles = async (files: FileList | null) => {
+    if (!files || !sessionId || !isAdminVerified || !adminSessionId) return;
+
+    setIsUploadingAttachments(true);
+    try {
+      for (const file of Array.from(files)) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+
+        const response = await fetch(`/api/sessions/${sessionId}/attachments`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-session': adminSessionId,
+          },
+          body: JSON.stringify({
+            name: file.name,
+            mimeType: file.type,
+            dataUrl,
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
+          if (response.status === 413) {
+            throw new Error(`"${file.name}" is too large to upload right now. Try a smaller file or split it into parts.`);
+          }
+          throw new Error(errorData.error || `Upload failed for "${file.name}"`);
+        }
+
+        const data = await response.json();
+        setAttachments((prev) => [data.attachment, ...prev]);
+      }
+
+      showToast('Documents uploaded and processed');
+    } catch (error: any) {
+      console.error('Error uploading files:', error);
+      showToast(error.message || 'Failed to upload files');
+    } finally {
+      setIsUploadingAttachments(false);
+    }
+  };
+
+  const handleUseAttachmentText = (attachment: ProjectAttachment, target: 'background' | 'notes') => {
+    if (!attachment.extractedText.trim()) {
+      showToast('This file does not have extracted text yet');
+      return;
+    }
+
+    setProjectData((prev) => ({
+      ...prev,
+      [target]: prev[target].trim()
+        ? `${prev[target].trim()}\n\n${attachment.extractedText.trim()}`
+        : attachment.extractedText.trim(),
+    }));
+
+    showToast(target === 'background' ? 'Added extracted text to project background' : 'Added extracted text to notes');
+  };
+
+  const handleDeleteAttachment = async (attachmentId: string) => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/attachments/${attachmentId}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-session': adminSessionId }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to delete attachment' }));
+        throw new Error(errorData.error || 'Failed to delete attachment');
+      }
+
+      setAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
+      showToast('Upload removed');
+    } catch (error: any) {
+      console.error('Error deleting attachment:', error);
+      showToast(error.message || 'Failed to delete upload');
+    }
+  };
+
+  const handleRenameProject = async (name: string) => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-session': adminSessionId,
+        },
+        body: JSON.stringify({
+          name,
+          project_client: name,
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to rename project' }));
+        throw new Error(errorData.error || 'Failed to rename project');
+      }
+
+      setCurrentSession((prev) => prev ? { ...prev, name } : prev);
+      setProjectData((prev) => ({ ...prev, client: name }));
+      showToast('Project name updated');
+    } catch (error: any) {
+      console.error('Error renaming project:', error);
+      showToast(error.message || 'Failed to rename project');
+    }
+  };
+
   const handleCardUpdate = async (cardId: string, updates: Partial<CardData>) => {
     if (!sessionId) return;
 
@@ -984,7 +1031,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         },
         body: JSON.stringify(updates)
       });
@@ -993,7 +1040,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         throw new Error('Failed to update card');
       }
 
-      // Broadcast to other users via PartyKit
       sendCardUpdate(cardId, updates);
     } catch (error) {
       console.error('Error updating card:', error);
@@ -1001,7 +1047,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     }
   };
 
-  // Add a new card via API and broadcast
   const handleCardAdd = async (cardData: Omit<CardData, 'id'>) => {
     if (!sessionId) return;
 
@@ -1010,7 +1055,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         },
         body: JSON.stringify(cardData)
       });
@@ -1029,10 +1074,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         order: data.card.order_index
       };
 
-      // Add to local state
       setCards(prev => [...prev, newCard]);
-
-      // Broadcast to other users via PartyKit
       sendCardCreate(newCard);
 
       return newCard.id;
@@ -1042,7 +1084,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     }
   };
 
-  // Delete a card via API and broadcast
   const handleCardDelete = async (cardId: string) => {
     if (!sessionId) return;
 
@@ -1050,7 +1091,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       const response = await fetch(`/api/sessions/${sessionId}/cards/${cardId}`, {
         method: 'DELETE',
         headers: {
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         }
       });
 
@@ -1058,11 +1099,8 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         throw new Error('Failed to delete card');
       }
 
-      // Update local state
       setCards(prev => prev.filter(card => card.id !== cardId));
       setConnections(prev => prev.filter(conn => conn.from !== cardId && conn.to !== cardId));
-
-      // Broadcast to other users via PartyKit
       sendCardDelete(cardId);
     } catch (error) {
       console.error('Error deleting card:', error);
@@ -1076,7 +1114,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         },
         body: JSON.stringify({ section, card_ids: cardIds })
       });
@@ -1095,7 +1133,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         },
         body: JSON.stringify({ from, to })
       });
@@ -1115,7 +1153,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       const response = await fetch(`/api/sessions/${sessionId}/connections/${connectionId}`, {
         method: 'DELETE',
         headers: {
-          ...(isAdmin && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
+          ...(isAdminVerified && adminSessionId ? { 'x-admin-session': adminSessionId } : {})
         }
       });
       if (response.ok) {
@@ -1152,7 +1190,6 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
     );
   }
 
-  // Show password wall for password-protected sessions
   if (showPasswordWall) {
     return (
       <SessionPasswordWall
@@ -1165,14 +1202,12 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
 
   return (
     <div className="flex h-screen w-full bg-gray-50 text-gray-900 font-sans overflow-hidden antialiased">
-      {/* Profile Prompt */}
       <UserProfilePrompt
         isOpen={showProfilePrompt}
         onSubmit={handleProfileSubmit}
         onClose={() => setShowProfilePrompt(false)}
       />
 
-      {/* Toast */}
       {toastMessage && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] bg-red-500 text-white px-6 py-3 rounded-full shadow-lg font-medium flex items-center gap-2">
           <span>{toastMessage}</span>
@@ -1180,7 +1215,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         </div>
       )}
 
-        <Sidebar 
+      <Sidebar 
         onViewChange={() => {}} 
         currentView="canvas" 
         selectedModel={selectedModel} 
@@ -1189,7 +1224,7 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
         currentSession={currentSession}
         isEditMode={isEditMode}
         onLogout={() => {}}
-        isAdmin={isAdmin}
+        isAdmin={isAdminVerified}
         activeConnections={liveConnections}
         currentConnectionId={currentConnectionId || ''}
         onKickUser={connectionRole === 'admin' ? handleKickUser : undefined}
@@ -1199,8 +1234,9 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
       <div className="flex flex-col flex-1 min-w-0">
         <TopBar 
           projectName={currentSession.name}
+          onTutorialSelect={setActiveTutorial}
           rightContent={
-            isAdmin && (
+            isAdminVerified && (
               <button 
                 onClick={() => window.location.href = '/'}
                 className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors shadow-sm whitespace-nowrap"
@@ -1213,75 +1249,88 @@ function SessionView({ isAdmin, adminSessionId }: SessionViewProps) {
           <div className="flex items-center gap-3">
             <ActiveUsers users={activeUsers} currentUserId={userProfile?.id || ''} />
             <ConnectionStatus isConnected={isConnected} isConnecting={isConnecting} message={partyKitError?.message} />
-            {!isAdmin && (
-              <button 
-                onClick={handleExitSession}
-                className="ml-2 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors shadow-sm"
-              >
-                Exit
-              </button>
-            )}
           </div>
         </TopBar>
+        
         <div className="flex flex-1 overflow-hidden relative">
-          <main className="flex-1 overflow-auto relative bg-gray-50/30">
-            {/* Show onboarding if not completed (admin only) */}
-            {!currentSession.onboarding_completed && isAdmin ? (
-              <NewProject 
-                onStart={handleStartProject} 
+          {currentSession.onboarding_completed ? (
+            <>
+              <Canvas 
+                onSelectCard={setSelectedCard}
+                selectedCard={selectedCard}
+                cards={cards}
+                setCards={setCards}
                 projectData={projectData}
-                setProjectData={setProjectData}
-                isGenerating={isGenerating}
+                showToast={showToast}
+                selectedModel={selectedModel}
+                isEditMode={isEditMode}
+                currentSession={currentSession}
+                onCardUpdate={handleCardUpdate}
+                onCardAdd={handleCardAdd}
+                onCardDelete={handleCardDelete}
+                onCardReorder={handleCardReorder}
+                onConnectionCreate={handleConnectionCreate}
+                onConnectionDelete={handleConnectionDelete}
+                connections={connections}
+                onCursorMove={sendCursorMove}
+                activeUsers={activeUsers}
+                currentUserId={userProfile?.id || ''}
+                activeTutorial={activeTutorial}
+                onCloseTutorial={() => setActiveTutorial(null)}
               />
-            ) : !currentSession.onboarding_completed && !isAdmin ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center bg-white rounded-xl shadow-lg p-8 max-w-md">
-                  <div className="text-5xl mb-4">⏳</div>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2">Session Setup in Progress</h2>
-                  <p className="text-gray-600">
-                    The facilitator is currently setting up this session. 
-                    Please check back later.
-                  </p>
-                  <div className="mt-4 text-sm text-gray-500">
-                    Session: <span className="font-mono">{currentSession.id}</span>
+              <RightPanel 
+                selectedCard={selectedCard} 
+                currentView="canvas" 
+                cards={cards} 
+                projectData={projectData}
+                selectedModel={selectedModel}
+                currentSession={currentSession}
+                isEditMode={isEditMode}
+                onCardAdd={handleCardAdd}
+                attachments={attachments}
+              />
+            </>
+          ) : (
+            <>
+              {isAdminVerified ? (
+                <NewProject 
+                  projectName={currentSession.name}
+                  onRenameProject={handleRenameProject}
+                  onStart={handleStartProject}
+                  projectData={projectData}
+                  setProjectData={setProjectData}
+                  isGenerating={isGenerating}
+                  attachments={attachments}
+                  isUploadingAttachments={isUploadingAttachments}
+                  onUploadFiles={handleUploadFiles}
+                  onUseAttachmentText={handleUseAttachmentText}
+                  onDeleteAttachment={handleDeleteAttachment}
+                />
+              ) : (
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <span className="text-3xl">&bull;&bull;&bull;</span>
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-900 mb-2">Session Setup in Progress</h2>
+                    <p className="text-gray-600 max-w-md mx-auto">
+                      The facilitator is currently setting up this session. Please wait a moment and the canvas will appear automatically when it's ready.
+                    </p>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <>
-                <Canvas
-                  onSelectCard={setSelectedCard}
-                  selectedCard={selectedCard}
-                  cards={cards}
-                  setCards={setCards}
-                  connections={connections}
-                  projectData={projectData}
-                  showToast={showToast}
-                  selectedModel={selectedModel}
-                  isEditMode={isEditMode}
-                  currentSession={currentSession}
-                  onCardUpdate={handleCardUpdate}
-                  onCardAdd={handleCardAdd}
-                  onCardDelete={handleCardDelete}
-                  onCardReorder={handleCardReorder}
-                  onConnectionCreate={handleConnectionCreate}
-                  onConnectionDelete={handleConnectionDelete}
-                  onCursorMove={sendCursorMove}
-                  activeUsers={activeUsers}
-                  currentUserId={userProfile?.id || ''}
-                />
-              </>
-            )}
-          </main>
-          <RightPanel 
-            selectedCard={selectedCard} 
-            currentView="canvas" 
-            cards={cards} 
-            projectData={projectData} 
-            selectedModel={selectedModel}
-            currentSession={currentSession}
-            isEditMode={isEditMode}
-          />
+              )}
+              <RightPanel 
+                selectedCard={selectedCard} 
+                currentView="new" 
+                cards={cards} 
+                projectData={projectData}
+                selectedModel={selectedModel}
+                currentSession={currentSession}
+                isEditMode={isEditMode}
+                attachments={attachments}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>

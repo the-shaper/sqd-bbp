@@ -8,6 +8,7 @@ import path from 'path';
 import yaml from 'js-yaml';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
+const ATTACHMENTS_INDEX_FILE = 'attachments.json';
 
 export interface CardFrontmatter {
   id: string;
@@ -37,6 +38,54 @@ export function ensureSessionDir(sessionId: string): void {
   if (!fs.existsSync(cardsDir)) {
     fs.mkdirSync(cardsDir, { recursive: true });
   }
+
+  const attachmentsDir = path.join(sessionDir, 'attachments');
+  if (!fs.existsSync(attachmentsDir)) {
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+  }
+}
+
+export function getAttachmentsDir(sessionId: string): string {
+  ensureSessionDir(sessionId);
+  return path.join(getSessionDir(sessionId), 'attachments');
+}
+
+export function writeAttachmentFile(
+  sessionId: string,
+  fileName: string,
+  content: Buffer
+): { relativePath: string; fullPath: string } {
+  const attachmentsDir = getAttachmentsDir(sessionId);
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const uniqueName = `${Date.now()}-${safeName}`;
+  const fullPath = path.join(attachmentsDir, uniqueName);
+
+  fs.writeFileSync(fullPath, content);
+
+  return {
+    relativePath: path.relative(process.cwd(), fullPath),
+    fullPath,
+  };
+}
+
+export function readAttachmentsIndex<T>(sessionId: string): T[] {
+  const filePath = path.join(getSessionDir(sessionId), ATTACHMENTS_INDEX_FILE);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T[];
+  } catch (error) {
+    console.error('Error reading attachments index:', error);
+    return [];
+  }
+}
+
+export function writeAttachmentsIndex<T>(sessionId: string, attachments: T[]): void {
+  ensureSessionDir(sessionId);
+  const filePath = path.join(getSessionDir(sessionId), ATTACHMENTS_INDEX_FILE);
+  fs.writeFileSync(filePath, JSON.stringify(attachments, null, 2), 'utf-8');
 }
 
 export function generateCardFilename(section: string, order: number): string {

@@ -1,0 +1,95 @@
+import React from "react";
+import type { ModelType } from "../../services/ai";
+import ChatActionConfirmation from "./ChatActionConfirmation";
+import ChatComposer from "./ChatComposer";
+import ChatThread from "./ChatThread";
+import { useChatPanel } from "./useChatPanel";
+import type { ChatActionRequest, ChatPanelContext, ProjectBackgroundApplyMode } from "./types";
+
+interface ChatPanelProps {
+  context: ChatPanelContext;
+  selectedModel: ModelType;
+  pendingAction?: ChatActionRequest | null;
+  onApplyProjectBackgroundDraft?: (text: string, mode: ProjectBackgroundApplyMode) => void;
+}
+
+export default function ChatPanel({ context, selectedModel, pendingAction, onApplyProjectBackgroundDraft }: ChatPanelProps) {
+  const {
+    messages,
+    input,
+    setInput,
+    isTyping,
+    handleSendMessage,
+    starterLabel,
+    starterPrompt,
+    emptyState,
+    chatContextSummary,
+  } = useChatPanel({ context, selectedModel, onApplyProjectBackgroundDraft });
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-6 pt-6 pb-4 border-b border-gray-100 bg-white">
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+          Chat Context
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {chatContextSummary.map((item) => (
+            <div key={item.label} className="rounded-lg bg-gray-50 border border-gray-100 px-3 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1">
+                {item.label}
+              </div>
+              <div className="text-sm text-gray-900">{item.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <ChatActionConfirmation action={pendingAction} />
+      <ChatThread
+        messages={messages}
+        isTyping={isTyping}
+        emptyState={emptyState}
+        renderMessageActions={(message) => {
+          if (
+            !onApplyProjectBackgroundDraft ||
+            context.currentView !== "new" ||
+            message.role !== "model" ||
+            !message.projectBackgroundDraft?.trim()
+          ) {
+            return null;
+          }
+
+          const hasExistingBackground = !!context.projectData.background.trim();
+
+          return (
+            <div className="mt-2 flex justify-start gap-2">
+              <button
+                onClick={() => onApplyProjectBackgroundDraft(message.projectBackgroundDraft!, "replace")}
+                className="px-3 py-1.5 rounded-md bg-white border border-indigo-200 text-indigo-700 text-sm font-medium hover:bg-indigo-50 transition-colors shadow-sm"
+              >
+                {hasExistingBackground ? "Replace project background" : "Use as project background"}
+              </button>
+              {hasExistingBackground && (
+                <button
+                  onClick={() => onApplyProjectBackgroundDraft(message.projectBackgroundDraft!, "append")}
+                  className="px-3 py-1.5 rounded-md bg-white border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm"
+                >
+                  Append to project background
+                </button>
+              )}
+            </div>
+          );
+        }}
+      />
+      <ChatComposer
+        input={input}
+        setInput={setInput}
+        onSend={handleSendMessage}
+        isTyping={isTyping}
+        showStarter={messages.length === 0}
+        starterLabel={starterLabel}
+        onStarter={() => setInput(starterPrompt)}
+      />
+    </div>
+  );
+}

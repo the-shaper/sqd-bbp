@@ -1,0 +1,210 @@
+# Implementation Walkthrough
+
+This document tracks what was built, when, and why. It pairs with [`bbp-phase2.md`](./bbp-phase2.md), which defines the roadmap; this file records the actual changes.
+
+---
+
+## 2025-04-25 — Slice B: Role-aware beta UX
+
+### Summary
+Centralized auth state, removed the sidebar for non-admins, added a compact sidebar mode, and introduced a top-bar help entry point with a swappable video-provider seam.
+
+### Decisions
+- **Auth context first, then UI:** Instead of hiding the sidebar with CSS, we removed it from the DOM entirely (`return null`) so non-admin layouts never reserve dead space.
+- **Compact mode persisted locally:** `localStorage` key `bbp_sidebar_compact`. No backend needed.
+- **Help icon is a placeholder seam:** The dropdown uses an abstract `TUTORIALS` array. The backing video provider (Mux, YouTube, self-hosted) can be swapped later by updating the array and the click handler.
+- **Type-check-first workflow:** All changes were validated with `npm run lint` and `npm run build` before being considered complete.
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/contexts/AuthContext.tsx` | **New.** Centralizes admin auth: `adminSessionId`, `isAdminVerified`, `verifyAdminSession`, `login`, `logout`, re-verify on focus/visibilitychange. |
+| `src/App.tsx` | Refactored to consume `useAuth()`. Removed inline auth state. Dashboard and SessionView are now inner components inside `AppRoutes`. |
+| `src/components/LoginPage.tsx` | Now uses `useAuth().login()` instead of receiving an `onLogin` prop. |
+| `src/components/Sidebar.tsx` | Returns `null` when `!isAdmin`. Added compact mode (`w-16` collapsed bar) with `PanelLeftClose` / `PanelLeft` toggle. State persisted to `localStorage`. |
+| `src/components/TopBar.tsx` | Added help icon (`HelpCircle`) with a dropdown tutorial list. Abstract `TUTORIALS` constant allows provider swap later. |
+
+### 2025-04-25 — Quick win: Help icon swap
+- Replaced `HelpCircle` with `Play` icon in `TopBar.tsx` for the tutorial dropdown toggle.
+
+## 2025-04-25 — Slice E: Canvas behavior refinement (partial)
+
+### Summary
+Updated AI prompts to target 100-character card sentences and added a live Twitter-like character counter to card editors.
+
+### Decisions
+- **Guidance, not validation:** The counter shows "X / 100" and a soft "You are past 100 characters" notice when exceeded, but typing is never blocked.
+- **Enter edit mode on focus:** Empty cards now enter inline edit mode immediately when the textarea receives focus, so the counter is always visible during typing.
+- **Both editing paths covered:** The counter appears in the `editingCardId === card.id` branch, which handles both new card creation and double-click editing.
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/services/ai.ts` | Added "maximum 100 characters" constraint to `generateCards()` and `generateSingleIdea()` prompts. |
+| `src/components/Canvas.tsx` | Added live character counter in lower-left corner of cards (`left-5` aligned with card padding, `pb-2` gap from text). Edit mode shows only the "You are past 100 characters" warning. Empty cards enter edit mode on focus. |
+| `src/components/TopBar.tsx` | Replaced `HelpCircle` with `Play` icon for tutorial dropdown toggle. |
+
+## 2025-04-25 — Slice E (continued): Story aggregation
+
+### Summary
+Replaced AI-driven story generation with deterministic paragraph aggregation.
+
+### Decisions
+- **Deterministic assembly, not creative transformation:** Walking the connection chain backwards and joining each card's content with paragraph breaks (`\n\n`).
+- **No AI call needed:** The operation is now synchronous and instant.
+- **Button renamed:** "Generate Story" → "Assemble Story" with `FileText` icon to reflect the non-AI nature.
+- **Preserves workshop intent:** Each source note becomes its own paragraph, avoiding AI drift.
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/components/Canvas.tsx` | Replaced `handleGenerateStory` with `handleAssembleStory`. Removed AI call. Removed unused `generatingStory` state. Updated button label and icon. |
+| `src/services/ai.ts` | `generateTransformationStory` no longer imported in Canvas (still exported for potential future use). |
+
+### Bug fix: Non-linear story assembly
+**Problem:** When cards were wired non-linearly (e.g., starting with `point_a → point_b`, then adding `challenge → point_a`), the old backwards walk from a single endpoint could miss branches or stop at false endpoints.
+
+**Fix:** Switched to a forward-walking approach:
+1. Build an adjacency map (`from → [to, ...]`) from all connections
+2. Find all **root nodes** (cards with no incoming connections)
+3. DFS forward from every root to collect every reachable card
+4. Sort collected cards by `COLUMN_ORDER` to ensure narrative sequence
+5. Assemble each card's content as its own paragraph
+
+This handles any directed graph of connections — linear, branched, or built in any order.
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/components/Canvas.tsx` | Rewrote `handleAssembleStory` with forward DFS from all roots + column-order sort. |
+
+## 2025-04-25 — Connection system fixes
+
+### Summary
+Fixed three related issues with the canvas connection system: lines appearing in wrong positions after reload, unreliable node hit detection, and lack of card-to-card connection UX.
+
+### Problems & Fixes
+
+#### 1. Connection lines out of place after reload
+**Problem:** `ConnectionLine` only measured DOM positions once via a single `requestAnimationFrame`. After page reload, cards were still animating in (motion.div), so initial measurements were wrong. Pan/zoom changes also weren't reflected.
+
+**Fix:** Replaced single-frame measurement with a continuous `requestAnimationFrame` loop plus `ResizeObserver` on the start node, end node, and board container. Lines now stay accurate through animations, panning, zooming, and layout shifts.
+
+#### 2. Node connections not always working
+**Problem:** `handlePointerUp` used `document.elementFromPoint` and checked `el.id.startsWith('node-left-')`. If the pointer landed on a child element (e.g., the inner circle div) instead of the parent with the ID, the connection was silently dropped.
+
+**Fix:** Added `findTargetCardId()` helper that traverses up the DOM tree from the hit element, looking for either a `node-left-*` ID or a `data-card-id` attribute. This ensures connections succeed regardless of which child element is actually hit.
+
+#### 3. Card-to-card connection UX
+**Problem:** Users had to hit tiny 16px node circles to create connections.
+
+**Fix:** Added **Shift+drag** card-to-card connections:
+- Hold **Shift** and drag from any card body to another card to create a connection
+- The card div now has `id={`card-${card.id}`}` so ConnectionLine can anchor to it
+- The existing node-based interaction still works for precision connections
+- Visual feedback: connection line follows the cursor during the drag
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/components/Canvas.tsx` | Rewrote `ConnectionLine` with continuous rAF loop + ResizeObserver. Rewrote `handlePointerUp` with DOM-tree traversal for hit detection. Added Shift+pointerdown handler on cards for card-to-card connections. Added `id` and `data-card-id` to card divs. |
+
+## 2025-04-25 — Inline card edit mode polish
+
+### Summary
+Redesigned card edit mode to look identical to normal display, fixed story card paragraph spacing, and resolved button overlap on new cards.
+
+### Problems & Fixes
+
+#### 1. Chunky edit mode
+**Problem:** Edit mode had a boxed textarea with `p-2` padding inside a `p-5` card, plus chunky Save/Cancel buttons that took up space and overlapped the Generate Idea button.
+
+**Fix:**
+- Removed Save/Cancel buttons entirely
+- Styled the `<textarea>` to look like normal card text:
+  - `bg-transparent`, `font-medium leading-snug text-gray-900`
+  - No border, no rounded corners, no focus ring
+  - `whitespace-pre-wrap`, `resize-none`, `outline-none`
+- Character counter stays visible at bottom-left during editing
+- Added `Past limit` warning inline with the counter when > 100 chars
+
+**Interaction model:**
+- **Enter** → saves and exits edit mode
+- **Escape** → cancels, reverts to original text
+- **Click outside the card** → cancels via document mousedown listener
+
+#### 2. Textarea not wrapping / text cropped
+**Root cause:** `<textarea>` is a scrollable viewport with a fixed intrinsic height (browser default ~2 rows). Unlike a `<div>` which expands to fit content, a textarea clips overflow by default. Previous attempts (removing `rows={1}`, adding `break-words`) didn't address the core issue: the box height was fixed.
+
+**Fix:** Added auto-resize logic:
+- `onInput` handler on both textareas sets `height = 'auto'` then `height = scrollHeight + 'px'`
+- `useEffect` triggers the same resize whenever `editingCardId` or `editContent` changes (covers initial focus and external updates)
+- Added `overflow-hidden` to prevent scrollbars from appearing
+
+Result: textarea now grows and shrinks to match its content, behaving like the reading-mode `<div>`.
+
+#### 3. Story card paragraph spacing lost
+**Problem:** `handleAssembleStory` joined paragraphs with `\n\n`, but the display `<div>` collapsed whitespace, so the story looked like one wall of text.
+
+**Fix:** Added `whitespace-pre-wrap` to the card content display `<div>`, so `\n\n` line breaks are actually rendered as blank lines between paragraphs.
+
+#### 4. Button overlap on new cards
+**Problem:** New cards started in edit mode with the chunky Save/Cancel div, pushing the Generate Idea button down and causing overlap.
+
+**Fix:** Resolved by removing Save/Cancel buttons. For empty/new cards, the Generate Idea button sits cleanly below the inline textarea with no overlap.
+
+### Files changed
+| File | What changed |
+|------|-------------|
+| `src/components/Canvas.tsx` | Rewrote card content rendering: inline textarea replaces chunky edit UI. Added auto-resize `onInput` + `useEffect`. Added `whitespace-pre-wrap` to content display. Added click-outside-to-cancel. |
+
+### Open follow-ups
+- Note synthesis into a new card (RightPanel track)
+- Chat apply confirmation / strict edit actions (Slice C)
+
+---
+
+## Session Summary (2025-04-25)
+
+This session delivered **Slice B** (Role-aware beta UX), **Slice E** (Canvas behavior refinement), and major connection system + inline edit polish. All changes were validated with `npm run lint` and `npm run build` before being considered complete.
+
+### Completed
+| Area | What |
+|------|------|
+| **Auth** | Centralized auth in `AuthContext.tsx`; refactored `App.tsx` and `LoginPage.tsx` |
+| **Sidebar** | Hidden for non-admins; compact mode with `localStorage` persistence |
+| **TopBar** | Help/tutorial dropdown with Play icon; swappable video-provider seam |
+| **AI Prompts** | 100-character target for `generateCards()` and `generateSingleIdea()` |
+| **Character Counter** | Live "X / 100" in lower-left of cards; orange "Past limit" when > 100 |
+| **Story Aggregation** | Deterministic paragraph assembly; forward DFS for non-linear wiring |
+| **Connection Lines** | Continuous rAF + ResizeObserver for accurate positioning |
+| **Connection Hit Detection** | DOM-tree traversal; works on child elements |
+| **Card-to-Card Connections** | Shift+drag from any card body |
+| **Inline Edit Mode** | Transparent textarea matching reading mode; auto-resize; no chunky buttons |
+| **Edit Interactions** | Enter = save, Escape = cancel, click outside = cancel |
+| **Story Spacing** | `whitespace-pre-wrap` preserves `\n\n` paragraph breaks |
+| **New Project Scroll** | `overflow-auto` fixes clipped onboarding screen |
+
+### Remaining for Phase 2
+- Slice C: Chat apply confirmation / strict edit actions
+- Slice D: Document-powered workflows (handwritten note synthesis)
+- 5.2: Note synthesis into a new card (RightPanel track)
+
+## Earlier (pre-IMPLEMENTATION.md)
+
+These were completed before this log was created. See `bbp-phase2.md` "Progress Update" section for the high-level list.
+
+- AI provider abstraction (`src/server/ai.ts` seam)
+- Shared chat extraction (`ChatPanel`, `ChatThread`, `ChatComposer`, `ChatActionConfirmation`)
+- Document ingestion architecture (`src/server/documents.ts`, `scripts/extract_attachment.py`)
+- Onboarding chat actions (replace/append project background)
+
+---
+
+## How to use this file
+
+1. When you finish a slice or a significant task, append a new dated section here.
+2. List decisions, files changed, and any follow-ups.
+3. Mark the corresponding items in `bbp-phase2.md` as done.
+
+This keeps the roadmap (`bbp-phase2.md`) clean as a requirements doc, while this file becomes the handoff journal for the next engineer.

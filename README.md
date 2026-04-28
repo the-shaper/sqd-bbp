@@ -27,7 +27,7 @@ Beyond Bullet Points is a collaborative storytelling canvas for building present
 - SQLite via `better-sqlite3`
 - Markdown card files with YAML frontmatter
 - PartyKit + `partysocket` for real-time collaboration
-- AI support through Gemini and the Opencode proxy
+- AI support through a server-owned provider layer for Gemini, the Opencode proxy, and OpenRouter
 
 ## Key Routes
 
@@ -50,7 +50,7 @@ Session data is stored locally under `data/`:
 
 - Node.js 18 or newer
 - npm
-- A Gemini API key for AI generation
+- At least one AI provider key for AI generation
 
 ### Install
 
@@ -63,7 +63,11 @@ npm install
 Create a `.env` file with the values you need:
 
 ```bash
-GEMINI_API_KEY=your_gemini_api_key
+AI_PROVIDER=opencode
+AI_DEFAULT_MODEL=minimax-m2.5
+GOOGLE_API_KEY=your_google_api_key
+OPENCODE_API_KEY=your_opencode_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 ADMIN_PASSWORD=shazam!
 PARTYKIT_HOST=localhost:1999
 PARTYKIT_ADMIN_SECRET=your_partykit_secret
@@ -73,6 +77,12 @@ VITE_PARTYKIT_PARTY=main
 
 Notes:
 
+- `AI_PROVIDER` sets the default fallback provider for server AI routes.
+- Model choice still determines provider when the selected model is vendor-specific, such as Gemini vs MiniMax vs OpenRouter models like `openrouter/auto`.
+- `GOOGLE_API_KEY` and `GEMINI_API_KEY` are treated interchangeably by the server.
+- Models containing `/` are treated as OpenRouter models by the server.
+- In local development, the server loads both `.env` and `.env.local`, with `.env.local` taking precedence.
+- If the selected model's provider is unavailable, the server falls back to an available provider instead of hard failing.
 - `ADMIN_PASSWORD` defaults to `shazam!` if not set.
 - `VITE_PARTYKIT_HOST` is used by the browser client.
 - `PARTYKIT_HOST` is used by the server when minting admin tokens.
@@ -130,9 +140,39 @@ The server exposes endpoints for:
 - Connection CRUD and bulk save
 - Exporting sessions as ZIP, Markdown, or JSON
 
+## Recent Changes (2025-04-25)
+
+### Role-aware UX (Slice B)
+- **Auth context:** Centralized admin auth state in `src/contexts/AuthContext.tsx`
+- **Sidebar hidden for non-admins:** Non-admin users no longer see the left sidebar; layout expands to fill the space
+- **Compact sidebar mode:** Admins can collapse the sidebar to a narrow icon bar (`localStorage` persisted)
+- **Top-bar help entry:** Play icon opens a tutorial dropdown with swappable video-provider seam
+
+### Canvas Behavior Refinement (Slice E)
+- **100-character guidance:** AI prompts now request max 100-character sentences
+- **Live character counter:** Shows "X / 100" in the lower-left of each card; turns orange past the limit with "Past limit" warning
+- **Story counter hidden:** Story cards skip the character counter (they hold long aggregated text)
+- **Story aggregation:** "Assemble Story" now deterministically concatenates connected cards into paragraphs — no AI call, preserves workshop intent
+- **Non-linear assembly fixed:** Forward DFS from all root nodes handles any wiring order
+
+### Connection System Fixes
+- **Lines stay accurate:** Continuous `requestAnimationFrame` + `ResizeObserver` keeps connection lines positioned correctly through reloads, pan, zoom, and animations
+- **Reliable hit detection:** DOM-tree traversal ensures connections succeed even when clicking child elements
+- **Card-to-card connections:** Hold **Shift** and drag from any card body to another card
+
+### Inline Edit Mode Polish
+- **Clean edit UI:** Edit mode looks identical to reading mode — transparent textarea, no borders, no chunky buttons
+- **Auto-resize textarea:** Grows and shrinks to match content height, never clips text
+- **Keyboard shortcuts:** Enter saves, Escape cancels
+- **Click outside:** Clicking anywhere outside the card (including canvas background) cancels edit mode
+- **Story paragraph spacing:** `whitespace-pre-wrap` preserves blank lines between aggregated paragraphs
+
+### Bug Fixes
+- **New Project scroll:** Onboarding screen now scrolls independently within the layout
+
 ## Development Notes
 
 - The app runs as a single Express server with Vite middleware in development.
 - Production serves the built app from `dist/`.
 - Card files are written as Markdown with YAML frontmatter so sessions stay human-readable and export-friendly.
-
+- See [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) for a detailed build journal and [`bbp-phase2.md`](./bbp-phase2.md) for the roadmap.

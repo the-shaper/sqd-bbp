@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Star, Plus, Save, Download, Sparkles, Loader2, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Star, Plus, Save, Download, Sparkles, Loader2, Trash2, FileText } from 'lucide-react';
 import { COLUMNS } from '../data';
 import { CardData } from '../types';
 import { motion } from 'motion/react';
 import InfiniteCanvas from './InfiniteCanvas';
 import { UserCursors } from './UserPresence';
+import FloatingVideoPlayer from './FloatingVideoPlayer';
 import type { UserPresence } from '../../party/index';
-import { generateSingleIdea, generateTransformationStory, ModelType } from '../services/ai';
+import { generateSingleIdea, ModelType } from '../services/ai';
+import type { TutorialItem } from '../tutorials';
 
 interface CanvasProps {
   onSelectCard: (id: string) => void;
@@ -29,44 +31,68 @@ interface CanvasProps {
   onConnectionDelete?: (connectionId: string) => Promise<void>;
   activeUsers?: UserPresence[];
   currentUserId?: string;
+  activeTutorial?: TutorialItem | null;
+  onCloseTutorial?: () => void;
 }
 
 interface ConnectionLineProps {
   startId: string;
   endId: string;
   isDrawing?: boolean;
+  refreshKey?: string;
 }
 
-const ConnectionLine: React.FC<ConnectionLineProps> = ({ startId, endId, isDrawing = false }) => {
+const ConnectionLine: React.FC<ConnectionLineProps> = ({ startId, endId, isDrawing = false, refreshKey }) => {
   const [path, setPath] = useState('');
-  
+
   useEffect(() => {
-    let animationFrameId: number;
+    let rafId: number;
+    let ro: ResizeObserver | null = null;
+
     const updatePath = () => {
       const startEl = document.getElementById(startId);
       const endEl = document.getElementById(endId);
       const containerEl = document.getElementById('board-container');
-      
+
       if (startEl && endEl && containerEl) {
         const startRect = startEl.getBoundingClientRect();
         const endRect = endEl.getBoundingClientRect();
         const containerRect = containerEl.getBoundingClientRect();
-        
+
         const scale = containerEl.offsetWidth > 0 ? containerRect.width / containerEl.offsetWidth : 1;
-        
+
         const startX = (startRect.left - containerRect.left + startRect.width / 2) / scale;
         const startY = (startRect.top - containerRect.top + startRect.height / 2) / scale;
         const endX = (endRect.left - containerRect.left + endRect.width / 2) / scale;
         const endY = (endRect.top - containerRect.top + endRect.height / 2) / scale;
-        
+
         const dx = Math.max(Math.abs(endX - startX) * 0.5, 50);
         setPath(`M ${startX} ${startY} C ${startX + dx} ${startY}, ${endX - dx} ${endY}, ${endX} ${endY}`);
+      } else {
+        setPath('');
       }
-      animationFrameId = requestAnimationFrame(updatePath);
+      rafId = requestAnimationFrame(updatePath);
     };
-    updatePath();
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [startId, endId]);
+
+    // Kick off continuous re-measurement loop (handles pan, animations, etc.)
+    rafId = requestAnimationFrame(updatePath);
+
+    // Also observe size changes on the involved elements for instant updates
+    ro = new ResizeObserver(() => {
+      // Loop will pick up the change on next frame
+    });
+    const startEl = document.getElementById(startId);
+    const endEl = document.getElementById(endId);
+    const containerEl = document.getElementById('board-container');
+    if (startEl) ro.observe(startEl);
+    if (endEl) ro.observe(endEl);
+    if (containerEl) ro.observe(containerEl);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro?.disconnect();
+    };
+  }, [startId, endId, refreshKey]);
 
   if (!path) return null;
 
@@ -92,7 +118,7 @@ const ConnectionLine: React.FC<ConnectionLineProps> = ({ startId, endId, isDrawi
   );
 }
 
-export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel, isEditMode, currentSession, onEditRequest, onCardUpdate, onCardAdd, onCursorMove, connections = [], onCardDelete, onCardReorder, onConnectionCreate, onConnectionDelete, activeUsers = [], currentUserId = '' }: CanvasProps) {
+export default function Canvas({ onSelectCard, selectedCard, cards, setCards, projectData, showToast, selectedModel, isEditMode, currentSession, onEditRequest, onCardUpdate, onCardAdd, onCursorMove, connections = [], onCardDelete, onCardReorder, onConnectionCreate, onConnectionDelete, activeUsers = [], currentUserId = '', activeTutorial, onCloseTutorial }: CanvasProps) {
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
   const [dragOverColId, setDragOverColId] = useState<string | null>(null);
@@ -100,7 +126,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   const [drawingLine, setDrawingLine] = useState<{ startNodeId: string, endX: number, endY: number, startX: number, startY: number } | null>(null);
 
   const [generatingCards, setGeneratingCards] = useState<Record<string, boolean>>({});
-  const [generatingStory, setGeneratingStory] = useState(false);
+
   
   // Track which card is being edited inline
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
@@ -109,6 +135,33 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
   // InfiniteCanvas pan/scale state - lifted here to persist across card edits
   const [pan, setPan] = useState({ x: 100, y: 100 });
   const [scale, setScale] = useState(1);
+  const panRef = useRef(pan);
+  const scaleRef = useRef(scale);
+  const cursorFrameRef = useRef<number | null>(null);
+  const latestCursorPositionRef = useRef<{ clientX: number; clientY: number } | null>(null);
+
+  const handlePanChange = useCallback((nextPan: { x: number; y: number }) => {
+    panRef.current = nextPan;
+    setPan(nextPan);
+  }, []);
+
+  const handleScaleChange = useCallback((nextScale: number) => {
+    scaleRef.current = nextScale;
+    setScale(nextScale);
+  }, []);
+
+  const handleViewportChange = useCallback((nextPan: { x: number; y: number }, nextScale: number) => {
+    panRef.current = nextPan;
+    scaleRef.current = nextScale;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (cursorFrameRef.current !== null) {
+        cancelAnimationFrame(cursorFrameRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
@@ -116,34 +169,56 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
         setDrawingLine(prev => prev ? { ...prev, endX: e.clientX, endY: e.clientY } : null);
       }
     };
+
+    const findTargetCardId = (el: Element | null): string | null => {
+      // Traverse up to find a node-left or data-card-id
+      let current: Element | null = el;
+      while (current) {
+        if (current.id && current.id.startsWith('node-left-')) {
+          return current.id.replace('node-left-', '');
+        }
+        const cardId = current.getAttribute('data-card-id');
+        if (cardId) {
+          return cardId;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    };
+
+    const getSourceCardId = (startNodeId: string): string | null => {
+      if (startNodeId.startsWith('node-right-')) {
+        return startNodeId.replace('node-right-', '');
+      }
+      if (startNodeId.startsWith('card-')) {
+        return startNodeId.replace('card-', '');
+      }
+      return null;
+    };
+
     const handlePointerUp = (e: PointerEvent) => {
       if (drawingLine) {
         const dummy = document.getElementById('cursor-dummy');
         if (dummy) dummy.style.display = 'none';
-        
+
         const el = document.elementFromPoint(e.clientX, e.clientY);
-        
+
         if (dummy) dummy.style.display = 'block';
 
-        let connected = false;
-        if (el && el.id && el.id.startsWith('node-left-')) {
-          const toCardId = el.id.replace('node-left-', '');
-          const fromCardId = drawingLine.startNodeId.replace('node-right-', '');
-          if (fromCardId !== toCardId) {
-            if (!connections.some(c => c.from === fromCardId && c.to === toCardId)) {
-              onConnectionCreate?.(fromCardId, toCardId);
-            }
-            connected = true;
+        const fromCardId = getSourceCardId(drawingLine.startNodeId);
+        const toCardId = findTargetCardId(el);
+
+        if (fromCardId && toCardId && fromCardId !== toCardId) {
+          if (!connections.some(c => c.from === fromCardId && c.to === toCardId)) {
+            onConnectionCreate?.(fromCardId, toCardId);
           }
-        }
-        
-        if (connected) {
           setDrawingLine(null);
           return;
         }
 
         const dist = Math.hypot(e.clientX - drawingLine.startX, e.clientY - drawingLine.startY);
         if (dist < 10 && el && el.id === drawingLine.startNodeId) {
+          setDrawingLine(null);
           return;
         }
 
@@ -338,6 +413,37 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     setEditContent('');
   };
 
+  // Click outside any editing card to cancel edit mode
+  useEffect(() => {
+    if (!editingCardId) return;
+
+    const handleClickOutside = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      const editingCard = document.getElementById(`card-${editingCardId}`);
+      if (editingCard && !editingCard.contains(target)) {
+        handleCancelEdit();
+      }
+    };
+
+    // Use capture phase so this fires before InfiniteCanvas can capture the pointer
+    document.addEventListener('pointerdown', handleClickOutside, { capture: true });
+
+    return () => {
+      document.removeEventListener('pointerdown', handleClickOutside, { capture: true });
+    };
+  }, [editingCardId]);
+
+  // Auto-resize any active editing textarea to match its content height
+  useEffect(() => {
+    if (!editingCardId) return;
+    const editingCard = document.getElementById(`card-${editingCardId}`);
+    const textarea = editingCard?.querySelector('textarea') as HTMLTextAreaElement | undefined;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  }, [editContent, editingCardId]);
+
   const handleGenerateSingle = async (cardId: string, colId: string) => {
     if (!isEditMode) return;
     
@@ -357,76 +463,124 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     }
   };
 
-  const handleGenerateStory = async () => {
+  const handleAssembleStory = () => {
     if (!isEditMode) {
-      showToast('Enter password to generate stories');
+      showToast('Enter password to assemble stories');
       return;
     }
-    
-    if (connections.length === 0) return;
-    
-    const COLUMN_ORDER = ['place', 'role', 'challenge', 'point_a', 'point_b', 'change', 'story'];
-    
-    const sources = new Set(connections.map(c => c.from));
-    const destinations = connections.map(c => c.to);
-    const endpoints = destinations.filter(d => !sources.has(d));
-    
-    const candidateIds = endpoints.length > 0 ? endpoints : destinations;
-    
-    const getColIndex = (cardId: string) => {
-      const card = cards.find(c => c.id === cardId);
-      return card ? COLUMN_ORDER.indexOf(card.section) : -1;
-    };
-    
-    candidateIds.sort((a, b) => getColIndex(b) - getColIndex(a));
-    const lastNodeId = candidateIds[0];
 
-    const chain = [];
-    let current: string | null = lastNodeId;
-    const visited = new Set<string>();
-    while (current && !visited.has(current)) {
-      visited.add(current);
-      const card = cards.find(c => c.id === current);
-      if (card) chain.unshift(card.content);
-      const prevConn = connections.find(c => c.to === current);
-      current = prevConn ? prevConn.from : null;
+    if (connections.length === 0) return;
+
+    const COLUMN_ORDER = ['place', 'role', 'challenge', 'point_a', 'point_b', 'change', 'story'];
+
+    // Build adjacency map and count incoming edges
+    const nextMap = new Map<string, string[]>();
+    const incomingCount = new Map<string, number>();
+    const connectedCardIds = new Set<string>();
+
+    for (const conn of connections) {
+      if (!nextMap.has(conn.from)) nextMap.set(conn.from, []);
+      nextMap.get(conn.from)!.push(conn.to);
+      incomingCount.set(conn.to, (incomingCount.get(conn.to) || 0) + 1);
+      connectedCardIds.add(conn.from);
+      connectedCardIds.add(conn.to);
     }
 
-    setGeneratingStory(true);
-    try {
-      const story = await generateTransformationStory(projectData.client, projectData.background, projectData.notes, chain.join(" -> "), selectedModel);
-      const newCardId = `gen-story-${Date.now()}`;
-      if (onCardAdd) {
-        const generatedCardId = await onCardAdd({ section: 'story', content: story, starred: false, order: 0 });
-        if (generatedCardId && onConnectionCreate) {
-          await onConnectionCreate(lastNodeId, generatedCardId);
-        }
-      } else {
-        const newCard: CardData = { id: newCardId, section: 'story', content: story, starred: false };
-        setCards([...cards, newCard]);
+    // Find all root nodes (cards with no incoming connections)
+    const roots: string[] = [];
+    for (const cardId of connectedCardIds) {
+      if ((incomingCount.get(cardId) || 0) === 0) {
+        roots.push(cardId);
       }
-    } catch (e: any) {
-      console.error(e);
-      if (e?.message?.includes('429') || e?.message?.includes('quota') || e?.status === 429) {
-        showToast("AI quota exceeded. Please add a story card manually.");
-      } else {
-        showToast("Failed to generate story. Please try again.");
+    }
+
+    // Fallback: if every card has an incoming edge (cycle), pick the leftmost
+    if (roots.length === 0 && connectedCardIds.size > 0) {
+      const sorted = Array.from(connectedCardIds).sort((a, b) => {
+        const cardA = cards.find(c => c.id === a);
+        const cardB = cards.find(c => c.id === b);
+        return COLUMN_ORDER.indexOf(cardA?.section || '') - COLUMN_ORDER.indexOf(cardB?.section || '');
+      });
+      roots.push(sorted[0]);
+    }
+
+    // DFS forward from each root to collect every reachable card
+    const visited = new Set<string>();
+    const collectedIds: string[] = [];
+
+    function visit(cardId: string) {
+      if (visited.has(cardId)) return;
+      visited.add(cardId);
+      collectedIds.push(cardId);
+      for (const nextId of nextMap.get(cardId) || []) {
+        visit(nextId);
       }
-    } finally {
-      setGeneratingStory(false);
+    }
+
+    for (const root of roots) {
+      visit(root);
+    }
+
+    // Ensure narrative order by sorting on column position
+    collectedIds.sort((a, b) => {
+      const cardA = cards.find(c => c.id === a);
+      const cardB = cards.find(c => c.id === b);
+      return COLUMN_ORDER.indexOf(cardA?.section || '') - COLUMN_ORDER.indexOf(cardB?.section || '');
+    });
+
+    // Assemble each card's content as its own paragraph
+    const story = collectedIds
+      .map(id => cards.find(c => c.id === id)?.content)
+      .filter(Boolean)
+      .join('\n\n');
+
+    if (!story.trim()) {
+      showToast('No content to assemble. Connect cards with content first.');
+      return;
+    }
+
+    const lastNodeId = collectedIds[collectedIds.length - 1];
+
+    if (onCardAdd) {
+      onCardAdd({ section: 'story', content: story, starred: false, order: 0 })
+        .then((generatedCardId) => {
+          if (generatedCardId && onConnectionCreate) {
+            onConnectionCreate(lastNodeId, generatedCardId);
+          }
+        })
+        .catch((error) => {
+          console.error('Error assembling story:', error);
+          showToast('Failed to create story card');
+        });
+    } else {
+      const newCard: CardData = { id: `gen-story-${Date.now()}`, section: 'story', content: story, starred: false };
+      setCards([...cards, newCard]);
     }
   };
 
   // Handle mouse move for cursor tracking
   const handleMouseMove = (e: React.MouseEvent) => {
     if (onCursorMove) {
-      const container = document.getElementById('canvas-container');
-      if (container) {
-        const rect = container.getBoundingClientRect();
-        const x = (e.clientX - rect.left - pan.x) / scale;
-        const y = (e.clientY - rect.top - pan.y) / scale;
-        onCursorMove(x, y);
+      latestCursorPositionRef.current = { clientX: e.clientX, clientY: e.clientY };
+
+      if (cursorFrameRef.current !== null) {
+        return;
       }
+
+      cursorFrameRef.current = requestAnimationFrame(() => {
+        const latestPosition = latestCursorPositionRef.current;
+        cursorFrameRef.current = null;
+
+        if (!latestPosition) return;
+
+        const container = document.getElementById('canvas-container');
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          const x = (latestPosition.clientX - rect.left - panRef.current.x) / scaleRef.current;
+          const y = (latestPosition.clientY - rect.top - panRef.current.y) / scaleRef.current;
+          onCursorMove(x, y);
+        }
+      });
     }
   };
 
@@ -466,9 +620,19 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedCard, isEditMode, handleDeleteCard]);
 
+  const connectionRefreshKey = cards
+    .map(card => `${card.id}:${card.section}:${card.order ?? ''}:${card.content?.length ?? 0}`)
+    .join('|');
+
   return (
     <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]" onMouseMove={handleMouseMove}>
-      <InfiniteCanvas pan={pan} scale={scale} onPanChange={setPan} onScaleChange={setScale}>
+      <InfiniteCanvas
+        pan={pan}
+        scale={scale}
+        onPanChange={handlePanChange}
+        onScaleChange={handleScaleChange}
+        onViewportChange={handleViewportChange}
+      >
         <motion.div 
           id="board-container"
           initial={{ opacity: 0, y: 20 }}
@@ -479,12 +643,22 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
           <UserCursors users={activeUsers} currentUserId={currentUserId} />
           {/* Render established connections */}
           {connections.map(conn => (
-            <ConnectionLine key={conn.id} startId={`node-right-${conn.from}`} endId={`node-left-${conn.to}`} />
+            <ConnectionLine
+              key={conn.id}
+              startId={`node-right-${conn.from}`}
+              endId={`node-left-${conn.to}`}
+              refreshKey={`${connectionRefreshKey}:${editingCardId ?? ''}`}
+            />
           ))}
           
           {/* Render currently drawn line */}
           {drawingLine && (
-            <ConnectionLine startId={drawingLine.startNodeId} endId="cursor-dummy" isDrawing={true} />
+            <ConnectionLine
+              startId={drawingLine.startNodeId}
+              endId="cursor-dummy"
+              isDrawing={true}
+              refreshKey={`${drawingLine.endX}:${drawingLine.endY}`}
+            />
           )}
 
           <div className="mb-16 relative z-10" data-pan-target="true">
@@ -512,8 +686,10 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                 >
                   <h3 className="font-bold text-center mb-4 text-lg pointer-events-none">{col.title}</h3>
                   {columnCards.map((card, cardIdx) => (
-                    <div 
+                    <div
                       key={card.id}
+                      id={`card-${card.id}`}
+                      data-card-id={card.id}
                       draggable={isEditMode}
                       onDragStart={(e) => handleDragStart(e, card.id)}
                       onDragOver={(e) => handleDragOverCard(e, card.id)}
@@ -524,8 +700,25 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                         onSelectCard(card.id);
                       }}
                       onDoubleClick={() => handleDoubleClick(card)}
+                      onPointerDown={(e) => {
+                        // Shift+drag on card body starts a card-to-card connection
+                        if (!isEditMode || !e.shiftKey) return;
+                        // Don't intercept node or button clicks
+                        const target = e.target as HTMLElement;
+                        if (target.closest('[id^="node-"]') || target.closest('button') || target.closest('textarea')) {
+                          return;
+                        }
+                        e.preventDefault();
+                        setDrawingLine({
+                          startNodeId: `card-${card.id}`,
+                          endX: e.clientX,
+                          endY: e.clientY,
+                          startX: e.clientX,
+                          startY: e.clientY
+                        });
+                      }}
                       className={`relative p-5 rounded-xl text-sm cursor-grab active:cursor-grabbing transition-all duration-200 group
-                        ${col.color} 
+                        ${col.color}
                         ${selectedCard === card.id ? 'ring-2 ring-indigo-500 shadow-lg scale-[1.02]' : 'hover:shadow-md border border-black/5'}
                         ${col.id === 'story' ? 'min-h-[240px] text-base p-6 flex items-center justify-center text-center rounded-3xl' : col.id === 'change' ? 'min-h-[180px] flex items-center justify-center text-center rounded-3xl' : 'min-h-[100px]'}
                         ${draggedCardId === card.id ? 'opacity-50 ring-2 ring-indigo-500 scale-105 shadow-2xl z-50' : ''}
@@ -621,42 +814,43 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                         #{cardIdx + 1}
                       </div>
                       
-                      {/* Editing Mode */}
+                      {/* Card content — editable inline */}
                       {editingCardId === card.id ? (
-                        <div className="flex flex-col gap-2" onClick={e => e.stopPropagation()}>
+                        <div className="w-full" onClick={e => e.stopPropagation()}>
                           <textarea
                             autoFocus
                             value={editContent}
                             onChange={(e) => setEditContent(e.target.value)}
+                            onInput={(e) => {
+                              const el = e.currentTarget;
+                              el.style.height = 'auto';
+                              el.style.height = `${el.scrollHeight}px`;
+                            }}
                             placeholder="Type your idea..."
-                            className="w-full text-sm p-2 rounded border border-gray-300 resize-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-text"
-                            onKeyDown={(e) => { 
-                              if (e.key === 'Enter' && !e.shiftKey) { 
-                                e.preventDefault(); 
-                                handleSaveEdit(card.id); 
+                            className="w-full bg-transparent font-medium leading-snug text-gray-900 resize-none outline-none cursor-text whitespace-pre-wrap break-words overflow-hidden"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSaveEdit(card.id);
                               }
                               if (e.key === 'Escape') {
                                 handleCancelEdit();
                               }
                             }}
                           />
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => handleSaveEdit(card.id)}
-                              className="flex-1 py-1.5 px-2 bg-indigo-600 text-white rounded text-xs font-medium hover:bg-indigo-700"
+                          {!card.content && (
+                            <button
+                              onClick={() => handleGenerateSingle(card.id, col.id)}
+                              disabled={generatingCards[card.id]}
+                              className="flex items-center justify-center gap-2 py-1.5 px-2 mt-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-medium transition-colors disabled:opacity-50 cursor-pointer"
                             >
-                              Save
+                              {generatingCards[card.id] ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                              Generate Idea
                             </button>
-                            <button 
-                              onClick={handleCancelEdit}
-                              className="flex-1 py-1.5 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium hover:bg-gray-300"
-                            >
-                              Cancel
-                            </button>
-                          </div>
+                          )}
                         </div>
                       ) : card.content ? (
-                        <div className={`${card.starred ? 'mt-5' : ''} font-medium leading-snug text-gray-900`}>
+                        <div className={`${card.starred ? 'mt-5' : ''} font-medium leading-snug text-gray-900 pb-2 whitespace-pre-wrap`}>
                           {card.content}
                         </div>
                       ) : (
@@ -664,27 +858,45 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
                           <textarea
                             autoFocus
                             placeholder="Type your idea..."
-                            className="w-full text-sm p-2 rounded border border-gray-300 resize-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-text"
-                            onBlur={(e) => handleUpdateCard(card.id, e.target.value)}
-                            onKeyDown={(e) => { 
-                              if (e.key === 'Enter' && !e.shiftKey) { 
-                                e.preventDefault(); 
-                                handleUpdateCard(card.id, e.currentTarget.value); 
+                            className="w-full bg-transparent font-medium leading-snug text-gray-900 resize-none outline-none cursor-text whitespace-pre-wrap break-words overflow-hidden"
+                            onInput={(e) => {
+                              const el = e.currentTarget;
+                              el.style.height = 'auto';
+                              el.style.height = `${el.scrollHeight}px`;
+                            }}
+                            onFocus={() => {
+                              setEditingCardId(card.id);
+                              setEditContent('');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleUpdateCard(card.id, e.currentTarget.value);
                               }
                             }}
                           />
-                          <button 
-                            onClick={() => handleGenerateSingle(card.id, col.id)} 
+                          <button
+                            onClick={() => handleGenerateSingle(card.id, col.id)}
                             disabled={generatingCards[card.id]}
                             className="flex items-center justify-center gap-2 py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-medium transition-colors disabled:opacity-50 cursor-pointer"
                           >
-                            {generatingCards[card.id] ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} 
+                            {generatingCards[card.id] ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                             Generate Idea
                           </button>
                         </div>
                       )}
-                    </div>
-                  ))}
+                      {card.section !== 'story' && (
+                        <div className="absolute bottom-2 left-5 text-[10px] font-mono">
+                          <span className={`${(editingCardId === card.id ? editContent.length : card.content?.length || 0) > 100 ? 'text-orange-500' : 'text-gray-400'}`}>
+                            {editingCardId === card.id ? editContent.length : card.content?.length || 0} / 100
+                          </span>
+                          {editingCardId === card.id && editContent.length > 100 && (
+                            <span className="text-orange-500 ml-1">Past limit</span>
+                          )}
+                        </div>
+                      )}
+                     </div>
+                   ))}
                   
                   {col.id !== 'change' && col.id !== 'story' && isEditMode && (
                     <button 
@@ -701,6 +913,13 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
         </motion.div>
       </InfiniteCanvas>
 
+      {activeTutorial && (
+        <FloatingVideoPlayer
+          tutorial={activeTutorial}
+          onClose={() => onCloseTutorial?.()}
+        />
+      )}
+
       {/* Render cursor dummy outside so it uses screen coordinates correctly */}
       {drawingLine && (
         <div id="cursor-dummy" style={{ position: 'fixed', left: drawingLine.endX, top: drawingLine.endY, width: 1, height: 1, pointerEvents: 'none', zIndex: 9999 }} />
@@ -709,13 +928,12 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
       {/* Floating Save/Download buttons */}
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-50">
         {connections.length > 0 && isEditMode && (
-          <button 
-            onClick={handleGenerateStory}
-            disabled={generatingStory}
-            className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-medium shadow-lg transition-all disabled:opacity-70"
+          <button
+            onClick={handleAssembleStory}
+            className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-medium shadow-lg transition-all"
           >
-            {generatingStory ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-            Generate Story
+            <FileText size={18} />
+            Assemble Story
           </button>
         )}
         <div className="flex items-center gap-3 bg-white/90 backdrop-blur-sm rounded-full shadow-xl border border-gray-200/50 p-3">

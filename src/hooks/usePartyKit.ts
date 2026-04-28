@@ -73,6 +73,7 @@ export function usePartyKit({
   const socketRef = useRef<PartySocket | null>(null);
   const kickedMessageRef = useRef<string | null>(null);
   const adminTokenRef = useRef(adminToken);
+  const lastCursorSentAtRef = useRef(0);
   const callbacksRef = useRef({
     onCardCreate,
     onCardUpdate,
@@ -397,12 +398,18 @@ export function usePartyKit({
 
   const sendCursorMove = useCallback((x: number, y: number) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
+      const now = Date.now();
+      if (now - lastCursorSentAtRef.current < 33) {
+        return;
+      }
+      lastCursorSentAtRef.current = now;
+
       const message: Message = {
         type: 'cursor:move',
         userId,
         x,
         y,
-        timestamp: Date.now(),
+        timestamp: now,
       };
       socketRef.current.send(JSON.stringify(message));
     }

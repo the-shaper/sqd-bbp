@@ -6,13 +6,11 @@
 import React, { useState } from 'react';
 import { Lock, Unlock, Loader2, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 
-interface LoginPageProps {
-  onLogin: (sessionId: string) => void;
-}
-
-export default function LoginPage({ onLogin }: LoginPageProps) {
+export default function LoginPage() {
   const navigate = useNavigate();
+  const { login } = useAuth();
   const [sessionCode, setSessionCode] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -47,7 +45,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         const data = await response.json();
         // Store admin session
         localStorage.setItem('adminSessionId', data.sessionId);
-        onLogin(data.sessionId);
+        login(data.sessionId);
       } else {
         const errorData = await response.json();
         setError(errorData.error || 'Invalid password');

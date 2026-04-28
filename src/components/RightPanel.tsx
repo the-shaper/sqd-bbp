@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Star, Loader2 } from 'lucide-react';
-import Markdown from 'react-markdown';
-import { CardData } from '../types';
-import { generateChatResponse, ModelType } from '../services/ai';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Check, Loader2, Sparkles, Star, X } from 'lucide-react';
+import { CardData, ProjectAttachment } from '../types';
+import { ModelType, synthesizeNoteIntoCard } from '../services/ai';
+import ChatPanel from './chat/ChatPanel';
+import type { ProjectBackgroundApplyMode } from './chat/types';
 
 interface RightPanelProps {
   selectedCard: string | null;
@@ -12,12 +13,9 @@ interface RightPanelProps {
   selectedModel: ModelType;
   currentSession?: { id: string; name: string } | null;
   isEditMode?: boolean;
-}
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'model';
-  text: string;
+  onApplyProjectBackground?: (text: string, mode: ProjectBackgroundApplyMode) => void;
+  onCardAdd?: (card: Omit<CardData, 'id'>) => Promise<string | undefined>;
+  attachments?: ProjectAttachment[];
 }
 
 export default function RightPanel({ 
@@ -27,148 +25,104 @@ export default function RightPanel({
   projectData, 
   selectedModel,
   currentSession,
-  isEditMode 
+  isEditMode,
+  onApplyProjectBackground,
+  onCardAdd,
+  attachments = [],
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<'notepad' | 'cards' | 'chat'>('chat');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [cardNotes, setCardNotes] = useState<Record<string, string>>({});
+  const [pendingCardText, setPendingCardText] = useState('');
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const [synthesisError, setSynthesisError] = useState<string | null>(null);
+  const [isCreatingCard, setIsCreatingCard] = useState(false);
 
   const card = selectedCard ? cards.find(c => c.id === selectedCard) : null;
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const noteStorageKey = useMemo(
+    () => `bbp_card_notes_${currentSession?.id || 'local'}`,
+    [currentSession?.id]
+  );
+  const currentNote = card ? cardNotes[card.id] || '' : '';
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isTyping]);
+    try {
+      const stored = localStorage.getItem(noteStorageKey);
+      setCardNotes(stored ? JSON.parse(stored) : {});
+    } catch (error) {
+      console.warn('Failed to load card notes:', error);
+      setCardNotes({});
+    }
+  }, [noteStorageKey]);
 
-  const handleSendMessage = async () => {
-    if (!input.trim() || isTyping) return;
+  useEffect(() => {
+    setPendingCardText('');
+    setSynthesisError(null);
+  }, [selectedCard]);
 
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      text: input.trim()
-    };
+  const updateCurrentNote = (value: string) => {
+    if (!card) return;
 
-    setMessages(prev => [...prev, userMessage]);
-    setInput('');
-    setIsTyping(true);
+    setCardNotes(prev => {
+      const next = { ...prev, [card.id]: value };
+      try {
+        localStorage.setItem(noteStorageKey, JSON.stringify(next));
+      } catch (error) {
+        console.warn('Failed to save card notes:', error);
+      }
+      return next;
+    });
+  };
+
+  const handleSynthesizeNote = async () => {
+    if (!card || !currentNote.trim()) return;
+
+    setIsSynthesizing(true);
+    setSynthesisError(null);
+    setPendingCardText('');
 
     try {
-      const history = messages.map(m => ({
-        role: m.role,
-        parts: [{ text: m.text }]
-      }));
-
-      const responseText = await generateChatResponse(
+      const text = await synthesizeNoteIntoCard(
         projectData.client,
         projectData.background,
         projectData.notes,
-        userMessage.text,
-        history,
-        selectedModel,
-        currentView
+        card,
+        currentNote,
+        selectedModel
       );
-
-      const modelMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: responseText
-      };
-
-      setMessages(prev => [...prev, modelMessage]);
+      setPendingCardText(text);
     } catch (error) {
-      console.error("Chat error:", error);
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: "Sorry, I encountered an error while trying to respond. Please try again."
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      console.error('Error synthesizing note:', error);
+      setSynthesisError('Could not synthesize this note. Please try again.');
     } finally {
-      setIsTyping(false);
+      setIsSynthesizing(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
+  const handleCreateSynthesizedCard = async () => {
+    if (!card || !pendingCardText.trim() || !onCardAdd) return;
+
+    setIsCreatingCard(true);
+    setSynthesisError(null);
+
+    try {
+      const nextOrder = cards
+        .filter(existingCard => existingCard.section === card.section)
+        .reduce((maxOrder, existingCard) => Math.max(maxOrder, existingCard.order ?? 0), -1) + 1;
+
+      await onCardAdd({
+        section: card.section,
+        content: pendingCardText.trim(),
+        starred: false,
+        order: nextOrder,
+      });
+      setPendingCardText('');
+    } catch (error) {
+      console.error('Error creating synthesized card:', error);
+      setSynthesisError('Could not create the card. Please try again.');
+    } finally {
+      setIsCreatingCard(false);
     }
   };
-
-  const renderChatInterface = () => (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 custom-scrollbar">
-        {messages.length === 0 ? (
-          <div className="text-base text-gray-500 text-center mt-10">
-            Start a conversation to generate background descriptions and ideas.
-          </div>
-        ) : (
-          messages.map(msg => (
-            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-base ${
-                msg.role === 'user' 
-                  ? 'bg-indigo-600 text-white rounded-br-sm' 
-                  : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-              }`}>
-                <div className="markdown-body">
-                  <Markdown>{msg.text}</Markdown>
-                </div>
-              </div>
-            </div>
-          ))
-        )}
-        {isTyping && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-gray-100 text-gray-800 rounded-bl-sm flex items-center gap-2">
-              <Loader2 size={16} className="animate-spin text-gray-500" />
-              <span className="text-sm text-gray-500">Thinking...</span>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <div className="p-6 border-t border-gray-200 bg-gray-50 shrink-0">
-        {messages.length === 0 && (
-          <button 
-            onClick={() => {
-              if (currentView === 'new') {
-                setInput("Let's start the guided Q&A to build my project background.");
-              } else {
-                setInput("Help me generate a background description for my project.");
-              }
-            }}
-            className="w-full py-3 border border-gray-300 rounded-md text-base font-medium mb-4 bg-white hover:bg-gray-100 transition-colors shadow-sm"
-          >
-            {currentView === 'new' ? 'Start Guided Q&A' : 'Help me generate background description'}
-          </button>
-        )}
-        <div className="relative">
-          <textarea 
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="w-full border border-gray-300 rounded-md p-4 pr-12 text-base resize-none h-24 focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm"
-            placeholder="Need help with ideas? Just say it"
-            disabled={isTyping}
-          />
-          <button 
-            onClick={handleSendMessage}
-            disabled={!input.trim() || isTyping}
-            className="absolute bottom-4 right-4 text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-50 disabled:hover:text-gray-400"
-          >
-            <Send size={20} />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 
   if (currentView === 'new') {
     return (
@@ -179,7 +133,18 @@ export default function RightPanel({
         </div>
         
         <div className="flex-1 overflow-hidden">
-          {renderChatInterface()}
+          <ChatPanel
+            context={{
+              currentView,
+              currentSession,
+              selectedCard: card,
+              projectData,
+              isEditMode,
+              attachments,
+            }}
+            selectedModel={selectedModel}
+            onApplyProjectBackgroundDraft={onApplyProjectBackground}
+          />
         </div>
       </div>
     );
@@ -241,18 +206,77 @@ export default function RightPanel({
             <div className="font-bold text-base mb-3">Add Notes</div>
             <textarea 
               className="w-full h-40 p-4 border border-gray-200 rounded-xl resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-base text-gray-600 leading-relaxed shadow-sm"
-              defaultValue="Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt."
+              placeholder="Capture a thought, objection, or detail for this card..."
+              value={currentNote}
+              onChange={(e) => updateCurrentNote(e.target.value)}
             />
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-400">
+                {currentNote.length > 0 ? `${currentNote.length} characters` : 'Saved per selected card'}
+              </div>
+              <button
+                onClick={handleSynthesizeNote}
+                disabled={!isEditMode || !currentNote.trim() || isSynthesizing}
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSynthesizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                Synthesize into new card
+              </button>
+            </div>
+
+            {synthesisError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {synthesisError}
+              </div>
+            )}
+
+            {pendingCardText && (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <div className="mb-2 text-sm font-semibold text-amber-900">Create new card?</div>
+                <div className="rounded-lg border border-amber-100 bg-white p-3 text-sm font-medium leading-snug text-gray-900">
+                  {pendingCardText}
+                </div>
+                <div className="mt-2 text-xs text-amber-700">{pendingCardText.length} / 100 characters</div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={handleCreateSynthesizedCard}
+                    disabled={isCreatingCard}
+                    className="flex items-center gap-2 rounded-md bg-amber-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+                  >
+                    {isCreatingCard ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                    Create
+                  </button>
+                  <button
+                    onClick={() => setPendingCardText('')}
+                    disabled={isCreatingCard}
+                    className="flex items-center gap-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 disabled:opacity-60"
+                  >
+                    <X size={14} />
+                    Reject
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {activeTab === 'cards' && !card && (
           <div className="flex-1 flex items-center justify-center text-gray-500 text-lg p-8">
-            Select a card to view details
+            Select a card to edit
           </div>
         )}
         {activeTab === 'chat' && (
           <div className="flex-1 overflow-hidden">
-            {renderChatInterface()}
+            <ChatPanel
+              context={{
+                currentView,
+                currentSession,
+                selectedCard: card,
+                projectData,
+                isEditMode,
+                attachments,
+              }}
+              selectedModel={selectedModel}
+            />
           </div>
         )}
         {activeTab === 'notepad' && (

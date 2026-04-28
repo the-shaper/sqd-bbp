@@ -1,41 +1,80 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import { CardData } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+export type ModelType = string;
+interface ChatGenerationContext {
+  sessionId?: string;
+  sessionName?: string;
+  canEdit?: boolean;
+  selectedCard?: Pick<CardData, 'id' | 'section' | 'content' | 'starred'> | null;
+  attachments?: Array<{
+    name: string;
+    summary: string;
+    extractedText?: string;
+  }>;
+}
 
-export type ModelType = 'gemini-3.1-pro-preview' | 'minimax-m2.5-free' | 'minimax-m2.5';
+async function requestTextCompletion(
+  prompt: string,
+  model: ModelType,
+  responseFormat?: 'json'
+): Promise<string> {
+  const response = await fetch("/api/ai/complete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ prompt, model, responseFormat })
+  });
 
-async function callOpencode(prompt: string, model: string = 'minimax-m2.5'): Promise<string> {
-  try {
-    const response = await fetch("/api/opencode", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ prompt, model })
-    });
-
-    if (!response.ok) {
-      let errorData;
-      try {
-        errorData = await response.json();
-      } catch (e) {
-        errorData = { error: await response.text() };
-      }
-      const errorMessage = typeof errorData.error === 'object' ? JSON.stringify(errorData.error) : errorData.error;
-      throw new Error(errorMessage || `Opencode API error: ${response.status}`);
+  if (!response.ok) {
+    let errorData;
+    try {
+      errorData = await response.json();
+    } catch (e) {
+      errorData = { error: await response.text() };
     }
 
-    const data = await response.json();
-    return data.choices[0].message.content;
-  } catch (error) {
-    console.warn("Opencode API failed, falling back to Gemini:", error);
-    const fallbackResponse = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
-      contents: prompt,
-    });
-    return fallbackResponse.text || "";
+    const errorMessage = typeof errorData.error === 'object' ? JSON.stringify(errorData.error) : errorData.error;
+    throw new Error(errorMessage || `AI completion error: ${response.status}`);
   }
+
+  const data = await response.json();
+  return data.text || "";
+}
+
+async function requestChatCompletion(
+  systemInstruction: string,
+  history: { role: 'user' | 'model', parts: { text: string }[] }[],
+  message: string,
+  model: ModelType
+): Promise<string> {
+  const response = await fetch("/api/ai/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      systemInstruction,
+      history,
+      message,
+      model
+    })
+  });
+
+  if (!response.ok) {
+    let errorData;
+    try {
+      errorData = await response.json();
+    } catch (e) {
+      errorData = { error: await response.text() };
+    }
+
+    const errorMessage = typeof errorData.error === 'object' ? JSON.stringify(errorData.error) : errorData.error;
+    throw new Error(errorMessage || `AI chat error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.text || "";
 }
 
 export async function generateCards(client: string, background: string, notes: string, model: ModelType = 'minimax-m2.5'): Promise<CardData[]> {
@@ -56,6 +95,7 @@ export async function generateCards(client: string, background: string, notes: s
     - change: The transformation or action required to get from A to B.
 
     Make the ideas concise, engaging, and directly related to the provided context.
+    Each idea must be a single sentence of maximum 100 characters.
     Address the business/client directly in the third person (e.g., "You are...", "They are...").
     
     IMPORTANT: You must return ONLY a valid JSON array of objects. Do not include markdown formatting like \`\`\`json.
@@ -66,48 +106,14 @@ export async function generateCards(client: string, background: string, notes: s
   `;
 
   try {
-    let jsonStr = "[]";
-    
-    if (model === 'gemini-3.1-pro-preview') {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                section: {
-                  type: Type.STRING,
-                  description: "Must be one of: place, role, challenge, point_a, point_b, change"
-                },
-                content: {
-                  type: Type.STRING,
-                  description: "The idea content."
-                }
-              },
-              required: ["section", "content"]
-            }
-          }
-        }
-      });
-      jsonStr = response.text || "[]";
-    } else {
-      const responseText = await callOpencode(prompt, model);
-      // Clean up potential markdown formatting and extract just the JSON array
-      let cleanedText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      
-      const startIndex = cleanedText.indexOf('[');
-      const endIndex = cleanedText.lastIndexOf(']');
-      
-      if (startIndex !== -1 && endIndex !== -1 && endIndex >= startIndex) {
-        jsonStr = cleanedText.substring(startIndex, endIndex + 1);
-      } else {
-        jsonStr = cleanedText;
-      }
-    }
+    const responseText = await requestTextCompletion(prompt, model, 'json');
+    let cleanedText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const startIndex = cleanedText.indexOf('[');
+    const endIndex = cleanedText.lastIndexOf(']');
+    const jsonStr =
+      startIndex !== -1 && endIndex !== -1 && endIndex >= startIndex
+        ? cleanedText.substring(startIndex, endIndex + 1)
+        : cleanedText;
 
     let parsed;
     try {
@@ -153,23 +159,51 @@ export async function generateSingleIdea(client: string, background: string, not
     - change: The transformation or action required to get from A to B.
     - story: A creative tale that takes the reader on a short journey, establishing a setting, showing the hurdles and mapping out the path to success.
 
+    The idea must be a single sentence of maximum 100 characters.
     Address the business/client directly in the third person (e.g., "You are...", "They are...").
     Return ONLY the idea text, nothing else.
   `;
 
   try {
-    if (model === 'gemini-3.1-pro-preview') {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-      });
-      return response.text?.trim() || "Generated idea";
-    } else {
-      const responseText = await callOpencode(prompt);
-      return responseText.trim() || "Generated idea";
-    }
+    const responseText = await requestTextCompletion(prompt, model);
+    return responseText.trim() || "Generated idea";
   } catch (error) {
     console.error("Error generating single idea:", error);
+    throw error;
+  }
+}
+
+export async function synthesizeNoteIntoCard(
+  client: string,
+  background: string,
+  projectNotes: string,
+  sourceCard: Pick<CardData, 'section' | 'content'>,
+  noteText: string,
+  model: ModelType = 'minimax-m2.5'
+): Promise<string> {
+  const prompt = `
+    You are an expert presentation strategist using the "Beyond Bulletpoints" methodology.
+    Turn the user's note into ONE concise card sentence for the "${sourceCard.section}" section.
+
+    Client: ${client || 'Unknown Client'}
+    Background: ${background || 'No background provided.'}
+    Project Notes: ${projectNotes || 'None.'}
+    Selected Card: ${sourceCard.content || 'No selected card content.'}
+    User Note:
+    ${noteText}
+
+    Requirements:
+    - Return only the new card sentence.
+    - Maximum 100 characters.
+    - Keep it concrete and useful for the current section.
+    - Do not include quotes, markdown, bullets, labels, or explanation.
+  `;
+
+  try {
+    const responseText = await requestTextCompletion(prompt, model);
+    return responseText.trim().replace(/^["']|["']$/g, '') || "Synthesized card idea";
+  } catch (error) {
+    console.error("Error synthesizing note into card:", error);
     throw error;
   }
 }
@@ -197,24 +231,34 @@ export async function generateTransformationStory(client: string, background: st
   `;
 
   try {
-    if (model === 'gemini-3.1-pro-preview') {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-      });
-      return response.text?.trim() || "Generated transformation story";
-    } else {
-      const responseText = await callOpencode(prompt, model);
-      return responseText.trim() || "Generated transformation story";
-    }
+    const responseText = await requestTextCompletion(prompt, model);
+    return responseText.trim() || "Generated transformation story";
   } catch (error) {
     console.error("Error generating transformation story:", error);
     throw error;
   }
 }
 
-export async function generateChatResponse(client: string, background: string, notes: string, message: string, history: { role: 'user' | 'model', parts: { text: string }[] }[], model: ModelType = 'gemini-3.1-pro-preview', mode: 'new' | 'canvas' = 'canvas'): Promise<string> {
+export async function generateChatResponse(client: string, background: string, notes: string, message: string, history: { role: 'user' | 'model', parts: { text: string }[] }[], model: ModelType = 'gemini-3.1-pro-preview', mode: 'new' | 'canvas' = 'canvas', context?: ChatGenerationContext): Promise<string> {
   let systemInstruction = '';
+  const contextInstruction = `
+    Current UI Context:
+    - Session ID: ${context?.sessionId || 'Unknown'}
+    - Session Name: ${context?.sessionName || 'Unknown'}
+    - Can Edit: ${context?.canEdit ? 'yes' : 'no'}
+    - Selected Card: ${context?.selectedCard ? `${context.selectedCard.section} :: ${context.selectedCard.content}` : 'none'}
+    - Uploaded context sources:
+${(context?.attachments && context.attachments.length > 0)
+  ? context.attachments.map((attachment) => `      * ${attachment.name}: ${attachment.summary}`).join('\n')
+  : '      * none'}
+
+    Behavior rules:
+    - Be context aware and refer to the current screen and selection when helpful.
+    - If you suggest changes to existing text, present them clearly as a proposal.
+    - Do not imply edits have already been applied.
+    - If editing is disabled, frame suggestions as recommendations only.
+    - Use uploaded document context when it is relevant.
+  `;
 
   if (mode === 'new') {
     systemInstruction = `
@@ -237,8 +281,14 @@ export async function generateChatResponse(client: string, background: string, n
       Client: ${client || 'Unknown'}
       Background: ${background || 'None'}
       Notes: ${notes || 'None'}
+      ${contextInstruction}
       
-      Once you have gathered the answers to ALL these questions, you MUST generate a cohesive, professional "Project Background" summary. Present this final background clearly so the user can easily copy and paste it into their project details.
+      Once you have gathered the answers to ALL these questions, you MUST generate a cohesive, professional "Project Background" summary.
+      When you are presenting a clean project background draft intended for direct insertion into the Project Background field, wrap ONLY the clean draft in these exact tags:
+      <project-background>
+      ...clean background only...
+      </project-background>
+      Do not put commentary, setup text, or closing remarks inside those tags.
     `;
   } else {
     systemInstruction = `
@@ -249,27 +299,15 @@ export async function generateChatResponse(client: string, background: string, n
       Client: ${client || 'Unknown Client'}
       Background: ${background || 'No background provided.'}
       Additional Notes: ${notes || 'None.'}
+      ${contextInstruction}
       
-      Provide concise, helpful, and strategic advice.
+      Provide concise, helpful, and strategic advice. If a card is selected, you may help refine it, expand on it, or propose a new adjacent card in the same section.
     `;
   }
 
   try {
-    if (model === 'gemini-3.1-pro-preview') {
-      const chat = ai.chats.create({
-        model: "gemini-3.1-pro-preview",
-        config: {
-          systemInstruction,
-        },
-        history: history,
-      });
-      const response = await chat.sendMessage({ message });
-      return response.text || "I'm sorry, I couldn't generate a response.";
-    } else {
-      const prompt = `${systemInstruction}\n\nHistory:\n${history.map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}\n\nUser: ${message}\nModel:`;
-      const responseText = await callOpencode(prompt, model);
-      return responseText.trim() || "I'm sorry, I couldn't generate a response.";
-    }
+    const responseText = await requestChatCompletion(systemInstruction, history, message, model);
+    return responseText.trim() || "I'm sorry, I couldn't generate a response.";
   } catch (error) {
     console.error("Error generating chat response:", error);
     throw error;

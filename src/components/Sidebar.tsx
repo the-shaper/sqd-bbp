@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { ChevronDown, Cpu, Plus, Trash2, FolderOpen, Lock, Unlock, Download, LogOut, Shield } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ChevronDown, Cpu, Plus, Trash2, FolderOpen, Lock, Unlock, Download, LogOut, Shield, PanelLeftClose, PanelLeft } from 'lucide-react';
 import { ModelType } from '../services/ai';
 import type { LiveConnection } from '../../party/index';
 
@@ -64,6 +64,19 @@ export default function Sidebar({
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
   const [requirePassword, setRequirePassword] = useState(false);
+  const [isCompact, setIsCompact] = useState(() => {
+    const stored = localStorage.getItem('bbp_sidebar_compact');
+    return stored ? stored === 'true' : false;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('bbp_sidebar_compact', String(isCompact));
+  }, [isCompact]);
+
+  // Non-admin: render nothing so layout does not reserve sidebar space
+  if (!isAdmin) {
+    return null;
+  }
 
   const handleCreateSession = async () => {
     if (!newSessionName.trim() || !onCreateSession) return;
@@ -101,10 +114,49 @@ export default function Sidebar({
     ).values()
   );
 
+  if (isCompact) {
+    return (
+      <div className="w-16 bg-white border-r border-gray-200 flex flex-col shrink-0">
+        <div className="h-16 flex items-center justify-center border-b border-gray-200">
+          <button
+            onClick={() => setIsCompact(false)}
+            className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors"
+            title="Expand sidebar"
+          >
+            <PanelLeft size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col items-center py-4 gap-3">
+          <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">
+            SQD
+          </div>
+          
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors mt-auto"
+              title="Logout"
+            >
+              <LogOut size={18} />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-72 bg-white border-r border-gray-200 flex flex-col shrink-0">
-      <div className="h-16 flex items-center px-6 border-b border-gray-200 font-bold text-xl tracking-tight">
-        SQD+BDO
+      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
+        <span className="font-bold text-xl tracking-tight">SQD+BDO</span>
+        <button
+          onClick={() => setIsCompact(true)}
+          className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors"
+          title="Collapse sidebar"
+        >
+          <PanelLeftClose size={18} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto flex flex-col">
@@ -241,7 +293,6 @@ export default function Sidebar({
                         >
                           {entry.name.charAt(0).toUpperCase()}
                         </div>
-                        {/* Active/inactive indicator dot */}
                         <div
                           className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
                             entry.isActive
@@ -358,6 +409,7 @@ export default function Sidebar({
               <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
               <option value="minimax-m2.5-free">MiniMax M2.5 Free</option>
               <option value="minimax-m2.5">MiniMax M2.5</option>
+              <option value="openrouter/auto">OpenRouter Auto</option>
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
               <ChevronDown size={14} />
