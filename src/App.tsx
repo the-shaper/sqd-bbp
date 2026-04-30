@@ -17,7 +17,7 @@ import { ActiveUsers, ConnectionStatus } from './components/UserPresence';
 import { usePartyKit } from './hooks/usePartyKit';
 import type { LiveConnection } from '../party/index';
 import { CardData, ProjectAttachment } from './types';
-import { generateCards, ModelType } from './services/ai';
+import { generateBriefFromUploads, generateCards, ModelType } from './services/ai';
 import type { ProjectBackgroundApplyMode } from './components/chat/types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { TutorialItem } from './tutorials';
@@ -419,7 +419,11 @@ function SessionView() {
   const [selectedModel, setSelectedModel] = useState<ModelType>('minimax-m2.5');
   const [attachments, setAttachments] = useState<ProjectAttachment[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  const [isGeneratingBriefFromUploads, setIsGeneratingBriefFromUploads] = useState(false);
+  const [isSavingProjectChanges, setIsSavingProjectChanges] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRegeneratingCards, setIsRegeneratingCards] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<'brief' | 'canvas'>('canvas');
   const [activeTutorial, setActiveTutorial] = useState<TutorialItem | null>(null);
   const [adminPartyKitToken, setAdminPartyKitToken] = useState<string | null>(null);
   const [presenceDebug, setPresenceDebug] = useState<string>('Presence not loaded yet');
@@ -693,6 +697,7 @@ function SessionView() {
 
   useEffect(() => {
     if (!sessionId) return;
+    setWorkspaceView('canvas');
     
     const loadSession = async () => {
       setIsLoading(true);
@@ -855,9 +860,97 @@ function SessionView() {
 
       if (response.ok) {
         setCurrentSession(prev => prev ? { ...prev, onboarding_completed: true } : null);
+        setWorkspaceView('canvas');
       }
     } catch (error) {
       console.error('Error completing onboarding:', error);
+    }
+  };
+
+  const saveProjectMetadata = async () => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    const nextClient = projectData.client || currentSession?.name || '';
+    const response = await fetch(`/api/sessions/${sessionId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-session': adminSessionId,
+      },
+      body: JSON.stringify({
+        project_client: nextClient,
+        project_background: projectData.background,
+        project_notes: projectData.notes,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save project changes');
+    }
+
+    setCurrentSession((prev) => prev ? {
+      ...prev,
+      project_client: nextClient,
+      project_background: projectData.background,
+      project_notes: projectData.notes,
+    } : prev);
+  };
+
+  const handleSaveProjectChanges = async () => {
+    setIsSavingProjectChanges(true);
+    try {
+      await saveProjectMetadata();
+      showToast('Project brief saved');
+    } catch (error: any) {
+      console.error('Error saving project changes:', error);
+      showToast(error.message || 'Failed to save project changes');
+    } finally {
+      setIsSavingProjectChanges(false);
+    }
+  };
+
+  const handleRegenerateCards = async () => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    const confirmed = window.confirm('Doing this will delete your existing cards, are you sure?');
+    if (!confirmed) return;
+
+    setIsRegeneratingCards(true);
+    try {
+      await saveProjectMetadata();
+
+      for (const card of cards) {
+        const response = await fetch(`/api/sessions/${sessionId}/cards/${card.id}`, {
+          method: 'DELETE',
+          headers: { 'x-admin-session': adminSessionId },
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to delete existing cards');
+        }
+
+        sendCardDelete(card.id);
+      }
+
+      setCards([]);
+      setConnections([]);
+      setSelectedCard(null);
+
+      const generatedCards = await generateCards(
+        projectData.client || currentSession?.name || '',
+        projectData.background,
+        projectData.notes,
+        selectedModel
+      );
+
+      await createGeneratedCards(generatedCards);
+      setWorkspaceView('canvas');
+      showToast('Cards regenerated from updated brief');
+    } catch (error: any) {
+      console.error('Error regenerating cards:', error);
+      showToast(error.message || 'Failed to regenerate cards');
+    } finally {
+      setIsRegeneratingCards(false);
     }
   };
 
@@ -871,33 +964,15 @@ function SessionView() {
     
     setIsGenerating(true);
     try {
+      await saveProjectMetadata();
+
       const generatedCards = await generateCards(
         projectData.client || currentSession?.name || '', 
         projectData.background, 
         projectData.notes, 
         selectedModel
       );
-      
-      for (const card of generatedCards) {
-        await fetch(`/api/sessions/${sessionId}/cards`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'x-admin-session': adminSessionId || ''
-          },
-          body: JSON.stringify({
-            section: card.section,
-            content: card.content,
-            starred: card.starred
-          })
-        });
-      }
-      
-      const response = await fetch(`/api/sessions/${sessionId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setCards(data.cards || []);
-      }
+      await createGeneratedCards(generatedCards);
       
       await completeOnboarding();
     } catch (error: any) {
@@ -955,20 +1030,110 @@ function SessionView() {
     }
   };
 
-  const handleUseAttachmentText = (attachment: ProjectAttachment, target: 'background' | 'notes') => {
-    if (!attachment.extractedText.trim()) {
-      showToast('This file does not have extracted text yet');
+  const handleUseAttachmentText = (attachment: ProjectAttachment, target: 'background' | 'notes', source: 'summary' | 'full') => {
+    const content = source === 'summary' ? attachment.summary : attachment.extractedText;
+
+    if (!content.trim()) {
+      showToast(source === 'summary' ? 'This file does not have a summary yet' : 'This file does not have extracted text yet');
       return;
     }
+
+    const sourceLabel = source === 'summary' ? 'summary' : 'extracted text';
+    const textToInsert = `[Source: ${attachment.name}]\n${content.trim()}`;
 
     setProjectData((prev) => ({
       ...prev,
       [target]: prev[target].trim()
-        ? `${prev[target].trim()}\n\n${attachment.extractedText.trim()}`
-        : attachment.extractedText.trim(),
+        ? `${prev[target].trim()}\n\n${textToInsert}`
+        : textToInsert,
     }));
 
-    showToast(target === 'background' ? 'Added extracted text to project background' : 'Added extracted text to notes');
+    showToast(target === 'background' ? `Added ${sourceLabel} to project overview` : `Added ${sourceLabel} to notes`);
+  };
+
+  const handleGenerateBriefFromUploads = async () => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    const usableAttachments = attachments.filter((attachment) =>
+      attachment.summary.trim() || attachment.extractedText.trim() || attachment.note?.trim()
+    );
+
+    if (usableAttachments.length === 0) {
+      showToast('Upload at least one document with extracted text or a summary first');
+      return;
+    }
+
+    setIsGeneratingBriefFromUploads(true);
+    try {
+      const brief = await generateBriefFromUploads(
+        projectData.client || currentSession?.name || '',
+        projectData.background,
+        projectData.notes,
+        usableAttachments,
+        selectedModel
+      );
+
+      setProjectData((prev) => ({ ...prev, background: brief }));
+
+      const response = await fetch(`/api/sessions/${sessionId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-session': adminSessionId,
+        },
+        body: JSON.stringify({
+          project_client: projectData.client || currentSession?.name || '',
+          project_background: brief,
+          project_notes: projectData.notes,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Generated brief, but could not save it to the session');
+      }
+
+      setCurrentSession((prev) => prev ? {
+        ...prev,
+        project_client: projectData.client || currentSession?.name || '',
+        project_background: brief,
+        project_notes: projectData.notes,
+      } : prev);
+      showToast('Generated project overview from uploads');
+    } catch (error: any) {
+      console.error('Error generating brief from uploads:', error);
+      showToast(error.message || 'Could not generate brief from uploads');
+    } finally {
+      setIsGeneratingBriefFromUploads(false);
+    }
+  };
+
+  const handleUpdateAttachmentNote = async (attachmentId: string, note: string) => {
+    if (!sessionId || !isAdminVerified || !adminSessionId) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/attachments/${attachmentId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-session': adminSessionId,
+        },
+        body: JSON.stringify({ note }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to update source note' }));
+        throw new Error(errorData.error || 'Failed to update source note');
+      }
+
+      const data = await response.json();
+      setAttachments((prev) => prev.map((attachment) =>
+        attachment.id === attachmentId ? data.attachment : attachment
+      ));
+    } catch (error: any) {
+      console.error('Error updating attachment note:', error);
+      showToast(error.message || 'Failed to update source note');
+      throw error;
+    }
   };
 
   const handleDeleteAttachment = async (attachmentId: string) => {
@@ -1081,6 +1246,32 @@ function SessionView() {
     } catch (error) {
       console.error('Error creating card:', error);
       throw error;
+    }
+  };
+
+  const createGeneratedCards = async (generatedCards: CardData[]) => {
+    if (!sessionId) return;
+
+    for (const card of generatedCards) {
+      await fetch(`/api/sessions/${sessionId}/cards`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-session': adminSessionId || ''
+        },
+        body: JSON.stringify({
+          section: card.section,
+          content: card.content,
+          starred: card.starred
+        })
+      });
+    }
+
+    const response = await fetch(`/api/sessions/${sessionId}`);
+    if (response.ok) {
+      const data = await response.json();
+      setCards(data.cards || []);
+      setConnections(data.connections || []);
     }
   };
 
@@ -1200,6 +1391,9 @@ function SessionView() {
     );
   }
 
+  const showBriefWorkspace = !currentSession.onboarding_completed || (isAdminVerified && workspaceView === 'brief');
+  const showCanvasWorkspace = currentSession.onboarding_completed && !showBriefWorkspace;
+
   return (
     <div className="flex h-screen w-full bg-gray-50 text-gray-900 font-sans overflow-hidden antialiased">
       <UserProfilePrompt
@@ -1217,7 +1411,7 @@ function SessionView() {
 
       <Sidebar 
         onViewChange={() => {}} 
-        currentView="canvas" 
+        currentView={showBriefWorkspace ? "new" : "canvas"} 
         selectedModel={selectedModel} 
         onModelChange={setSelectedModel}
         sessions={[]} 
@@ -1237,12 +1431,30 @@ function SessionView() {
           onTutorialSelect={setActiveTutorial}
           rightContent={
             isAdminVerified && (
-              <button 
-                onClick={() => window.location.href = '/'}
-                className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors shadow-sm whitespace-nowrap"
-              >
-                Exit Session
-              </button>
+              <div className="flex items-center gap-2">
+                {showCanvasWorkspace && (
+                  <button
+                    onClick={() => setWorkspaceView('brief')}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-colors shadow-sm whitespace-nowrap"
+                  >
+                    Return to brief
+                  </button>
+                )}
+                {showBriefWorkspace && currentSession.onboarding_completed && (
+                  <button
+                    onClick={() => setWorkspaceView('canvas')}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-colors shadow-sm whitespace-nowrap"
+                  >
+                    Return to canvas
+                  </button>
+                )}
+                <button
+                  onClick={() => window.location.href = '/'}
+                  className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors shadow-sm whitespace-nowrap"
+                >
+                  Exit Session
+                </button>
+              </div>
             )
           }
         >
@@ -1253,7 +1465,7 @@ function SessionView() {
         </TopBar>
         
         <div className="flex flex-1 overflow-hidden relative">
-          {currentSession.onboarding_completed ? (
+          {showCanvasWorkspace ? (
             <>
               <Canvas 
                 onSelectCard={setSelectedCard}
@@ -1297,13 +1509,22 @@ function SessionView() {
                   projectName={currentSession.name}
                   onRenameProject={handleRenameProject}
                   onStart={handleStartProject}
+                  onSaveChanges={handleSaveProjectChanges}
+                  onRegenerateCards={handleRegenerateCards}
                   projectData={projectData}
                   setProjectData={setProjectData}
                   isGenerating={isGenerating}
+                  isSavingProjectChanges={isSavingProjectChanges}
+                  isRegeneratingCards={isRegeneratingCards}
+                  showGenerateCanvasButton={!currentSession.onboarding_completed}
+                  showRegenerateCardsButton={currentSession.onboarding_completed}
                   attachments={attachments}
                   isUploadingAttachments={isUploadingAttachments}
+                  isGeneratingBriefFromUploads={isGeneratingBriefFromUploads}
                   onUploadFiles={handleUploadFiles}
+                  onGenerateBriefFromUploads={handleGenerateBriefFromUploads}
                   onUseAttachmentText={handleUseAttachmentText}
+                  onUpdateAttachmentNote={handleUpdateAttachmentNote}
                   onDeleteAttachment={handleDeleteAttachment}
                 />
               ) : (

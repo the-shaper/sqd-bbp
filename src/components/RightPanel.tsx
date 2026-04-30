@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Loader2, Sparkles, Star, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Loader2, Sparkles, Star, X } from 'lucide-react';
 import { CardData, ProjectAttachment } from '../types';
 import { ModelType, synthesizeNoteIntoCard } from '../services/ai';
 import ChatPanel from './chat/ChatPanel';
@@ -36,8 +36,21 @@ export default function RightPanel({
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [synthesisError, setSynthesisError] = useState<string | null>(null);
   const [isCreatingCard, setIsCreatingCard] = useState(false);
+  const [isBriefOpen, setIsBriefOpen] = useState(true);
 
   const card = selectedCard ? cards.find(c => c.id === selectedCard) : null;
+  const selectedCardLabel = useMemo(() => {
+    if (!card) return undefined;
+    const rowNumber = cards
+      .filter(existingCard => existingCard.section === card.section)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .findIndex(existingCard => existingCard.id === card.id) + 1;
+    const sectionName = card.section
+      .split('_')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+    return `${sectionName}-${rowNumber || 1}`;
+  }, [card, cards]);
   const noteStorageKey = useMemo(
     () => `bbp_card_notes_${currentSession?.id || 'local'}`,
     [currentSession?.id]
@@ -144,6 +157,7 @@ export default function RightPanel({
             }}
             selectedModel={selectedModel}
             onApplyProjectBackgroundDraft={onApplyProjectBackground}
+            selectedContextLabel={selectedCardLabel}
           />
         </div>
       </div>
@@ -152,31 +166,47 @@ export default function RightPanel({
 
   return (
     <div className="w-96 bg-white border-l border-gray-200 flex flex-col shrink-0 h-full">
-      <div className="p-8 border-b border-gray-200 flex flex-col max-h-[35vh] shrink-0">
-        <div className="text-base text-gray-500 mb-2 shrink-0">Hero: <span className="font-bold text-gray-900">{projectData.client || 'Client Name'}</span></div>
-        <div className="text-base text-gray-500 mb-5 shrink-0">Challenge: <span className="font-bold text-gray-900">Description of challenge, brief</span></div>
-        <div className="overflow-y-auto pr-3 -mr-3 custom-scrollbar">
-          <p className="text-base text-gray-700 leading-relaxed">
-            {projectData.background || "No background description provided."}
-          </p>
-        </div>
+      <div className="border-b border-gray-200 flex flex-col max-h-[35vh] shrink-0">
+        <button
+          onClick={() => setIsBriefOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-3 px-6 pt-5 pb-3 text-left hover:bg-gray-50 transition-colors"
+          aria-expanded={isBriefOpen}
+        >
+          <div>
+            <div className="text-sm text-gray-500">
+              Project overview <span className="font-bold text-gray-900">{projectData.client || currentSession?.name || 'Project Name'}</span>
+            </div>
+          </div>
+          <div className="shrink-0 text-gray-400">
+            {isBriefOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+          </div>
+        </button>
+        {isBriefOpen && (
+          <div className="overflow-y-auto custom-scrollbar pb-2">
+            <div className="px-6 pr-8">
+              <p className="text-sm text-gray-700 leading-relaxed">
+                {projectData.background || "No background description provided."}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex border-b border-gray-200 bg-gray-50 shrink-0">
         <button 
-          className={`flex-1 py-4 text-sm font-bold tracking-wider uppercase transition-colors ${activeTab === 'notepad' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+          className={`flex-1 py-2 text-xs font-bold tracking-wider uppercase transition-colors ${activeTab === 'notepad' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
           onClick={() => setActiveTab('notepad')}
         >
           Notepad
         </button>
         <button 
-          className={`flex-1 py-4 text-sm font-bold tracking-wider uppercase border-l border-gray-200 transition-colors ${activeTab === 'cards' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+          className={`flex-1 py-2 text-xs font-bold tracking-wider uppercase border-l border-gray-200 transition-colors ${activeTab === 'cards' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
           onClick={() => setActiveTab('cards')}
         >
           Cards
         </button>
         <button 
-          className={`flex-1 py-4 text-sm font-bold tracking-wider uppercase border-l border-gray-200 transition-colors ${activeTab === 'chat' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+          className={`flex-1 py-2 text-xs font-bold tracking-wider uppercase border-l border-gray-200 transition-colors ${activeTab === 'chat' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
           onClick={() => setActiveTab('chat')}
         >
           Chat
@@ -276,6 +306,7 @@ export default function RightPanel({
                 attachments,
               }}
               selectedModel={selectedModel}
+              selectedContextLabel={selectedCardLabel}
             />
           </div>
         )}

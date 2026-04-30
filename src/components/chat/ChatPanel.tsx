@@ -11,9 +11,10 @@ interface ChatPanelProps {
   selectedModel: ModelType;
   pendingAction?: ChatActionRequest | null;
   onApplyProjectBackgroundDraft?: (text: string, mode: ProjectBackgroundApplyMode) => void;
+  selectedContextLabel?: string;
 }
 
-export default function ChatPanel({ context, selectedModel, pendingAction, onApplyProjectBackgroundDraft }: ChatPanelProps) {
+export default function ChatPanel({ context, selectedModel, pendingAction, onApplyProjectBackgroundDraft, selectedContextLabel }: ChatPanelProps) {
   const {
     messages,
     input,
@@ -23,27 +24,10 @@ export default function ChatPanel({ context, selectedModel, pendingAction, onApp
     starterLabel,
     starterPrompt,
     emptyState,
-    chatContextSummary,
   } = useChatPanel({ context, selectedModel, onApplyProjectBackgroundDraft });
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 pt-6 pb-4 border-b border-gray-100 bg-white">
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-          Chat Context
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          {chatContextSummary.map((item) => (
-            <div key={item.label} className="rounded-lg bg-gray-50 border border-gray-100 px-3 py-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1">
-                {item.label}
-              </div>
-              <div className="text-sm text-gray-900">{item.value}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       <ChatActionConfirmation action={pendingAction} />
       <ChatThread
         messages={messages}
@@ -89,6 +73,7 @@ export default function ChatPanel({ context, selectedModel, pendingAction, onApp
         showStarter={messages.length === 0}
         starterLabel={starterLabel}
         onStarter={() => setInput(starterPrompt)}
+        selectedContextLabel={selectedContextLabel}
       />
     </div>
   );

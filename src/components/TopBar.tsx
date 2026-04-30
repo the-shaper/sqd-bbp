@@ -1,5 +1,5 @@
 import React, { ReactNode, useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, RotateCcw, X, ExternalLink } from 'lucide-react';
+import { Play, Pause, RotateCcw, X, ExternalLink, CircleHelp } from 'lucide-react';
 import { TUTORIALS, TutorialItem } from '../tutorials';
 
 interface TopBarProps {
@@ -177,7 +177,7 @@ export default function TopBar({ children, projectName, rightContent, onTimerCom
             className="p-2 rounded-full hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-colors"
             title="Help & Tutorials"
           >
-            {showHelp ? <X size={20} /> : <Play size={20} />}
+            {showHelp ? <X size={20} /> : <CircleHelp size={20} />}
           </button>
           
           {showHelp && (

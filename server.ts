@@ -425,6 +425,7 @@ async function startServer() {
         extractionStatus: extracted.extractionStatus,
         extractedText: extracted.extractedText,
         summary: extracted.summary,
+        note: "",
       };
 
       const attachments = fileUtils.readAttachmentsIndex<ProjectAttachment>(id);
@@ -434,6 +435,36 @@ async function startServer() {
       res.status(201).json({ attachment });
     } catch (error: any) {
       console.error("Error uploading attachment:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch("/api/sessions/:id/attachments/:attachmentId", admin.requireAdminAuth, (req, res) => {
+    try {
+      const { id, attachmentId } = req.params;
+      const { note } = req.body;
+      const session = sessions.getSession(id);
+
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      const attachments = fileUtils.readAttachmentsIndex<ProjectAttachment>(id);
+      const attachmentIndex = attachments.findIndex((item) => item.id === attachmentId);
+
+      if (attachmentIndex === -1) {
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      attachments[attachmentIndex] = {
+        ...attachments[attachmentIndex],
+        note: typeof note === "string" ? note : attachments[attachmentIndex].note || "",
+      };
+
+      fileUtils.writeAttachmentsIndex(id, attachments);
+      res.json({ attachment: attachments[attachmentIndex] });
+    } catch (error: any) {
+      console.error("Error updating attachment:", error);
       res.status(500).json({ error: error.message });
     }
   });

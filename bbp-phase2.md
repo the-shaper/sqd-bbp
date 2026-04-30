@@ -17,10 +17,14 @@ Completed so far:
 - Added onboarding chat actions that can write clean drafts into the Project Background field
 - Improved onboarding chat so draft actions appear only when a real project background draft exists
 - Added replace/append project background actions and chat-command style application
+- Added upload-powered project brief generation for the Project Overview flow
+- Added admin return-to-brief, save-only, and confirmed regenerate-cards flows
+- Tightened the canvas right panel with a collapsible project overview, compact tabs/composer, and selected-card chat context pills
+- Fixed canvas selection clearing and empty-card AI generation refresh behavior
 
 In progress now:
 
-- First-pass document ingestion for the New Project / overview flow
+- Remaining document ingestion follow-ups, especially OCR/image-based notes and handwritten-note synthesis
 
 Recently completed:
 
@@ -28,6 +32,8 @@ Recently completed:
 - [x] Slice E: 100-character card guidance + AI prompt updates + story aggregation + inline edit polish
 - [x] Connection system: line positioning, hit detection, card-to-card Shift+drag connections
 - [x] Inline edit mode: transparent textarea, auto-resize, click-outside-to-cancel, no chunky buttons
+- [x] Project Overview flow: upload-generated brief, save-only edits, and confirmed card regeneration
+- [x] Canvas sidebar polish: project overview accordion, selected-card composer pill, and click-empty-space deselection
 
 This phase should optimize for two things at the same time:
 
@@ -215,6 +221,8 @@ Requirement:
 
 - Chat should know where the user is in the product and what entity is currently in focus.
 
+Status: [x] Partially complete — chat now receives New Project and Canvas context, onboarding chat can draft and apply project background text, and Canvas chat shows selected-card context in the composer. Remaining work is deeper selected-card editing/refinement and broader strict apply confirmation for stored mutations.
+
 Contexts to support:
 
 - Project overview context
@@ -259,10 +267,14 @@ Requirement:
 
 Recommended scope:
 
-- show uploaded files
-- show extraction status
-- allow adding a note per upload
-- allow the user to pull extracted content into the overview intentionally
+- [x] show uploaded files
+- [x] show extraction status
+- [x] allow adding a note per upload
+- [x] allow the user to pull extracted content into the overview intentionally
+- [x] allow summary-only import when full text is unavailable or too noisy
+- [x] pass source summaries and per-upload notes into chat context
+- [x] generate a synthesized project overview brief from uploads
+- [x] persist generated and manually saved project overview text into session metadata
 
 Why this is after the ingestion seam:
 
@@ -347,6 +359,14 @@ Recommendation:
 Why:
 
 - This better preserves workshop intent and reduces unwanted AI drift.
+
+#### 5.4 Canvas selection and generated-card polish
+
+Status: [x] Done — Canvas clicks outside card UI now clear the selected card, which also hides the chat composer context pill. Empty-card AI generation now updates the card content immediately and exits edit mode when the AI result returns, so the generated text is visible without an extra blur/click.
+
+Current hotspot:
+
+- [src/components/Canvas.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/components/Canvas.tsx)
 
 ### 6. Add supporting beta UX polish
 These items are meaningful, but they should follow the larger architecture and workflow changes above.
@@ -434,6 +454,29 @@ Current hotspot:
 
 - [src/components/Canvas.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/components/Canvas.tsx)
 
+#### 6.5 Project brief and right-panel workspace polish
+
+Status: [x] Done — Admins can return from the canvas to the brief, save brief changes without entering or regenerating the canvas, and explicitly confirm when regenerating cards will delete existing cards.
+
+Completed details:
+
+- [x] Add **Return to brief** in the canvas top bar for admins only
+- [x] Add **Save changes** to the Project Overview editor
+- [x] Add **Save changes and regenerate cards** with destructive confirmation
+- [x] Make the Project Overview editor scroll as a full workspace container
+- [x] Replace disconnected right-panel hero/challenge labels with `Project overview [project name]`
+- [x] Make the right-panel project overview collapsible
+- [x] Compact right-panel tabs and chat composer spacing
+- [x] Hide the chat context summary block for now
+- [x] Show selected-card context as a composer pill only when a card is selected
+
+Current hotspots:
+
+- [src/App.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/App.tsx)
+- [src/components/NewProject.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/components/NewProject.tsx)
+- [src/components/RightPanel.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/components/RightPanel.tsx)
+- [src/components/chat/ChatComposer.tsx](/Users/HAND/Documents/a/work/2026/sqd/sqd-bbp/src/components/chat/ChatComposer.tsx)
+
 ## Suggested Phase 2 Delivery Slices
 
 ### Slice A: Handoff foundations
@@ -457,17 +500,19 @@ Current hotspot:
 
 ### Slice C: Context-aware intelligence
 
-- make chat aware of page/session/card context
+- [x] make chat aware of page/session/card context
+- [x] expose selected-card context inside the chat composer
 - add strict apply confirmation for edits
 - support overview feedback and edits
 - support selected-card feedback, refinement, and sibling-card creation
 
 ### Slice D: Document-powered workflows
 
-- add overview-page uploads
-- capture extracted document context into project overview workflows
-- support OCR/image-based notes
-- synthesize handwritten notes into new cards
+- [x] add overview-page uploads
+- [x] capture extracted document context into project overview workflows
+- [x] generate a project overview brief from uploads
+- [ ] support OCR/image-based notes
+- [ ] synthesize handwritten notes into new cards
 
 ### Slice E: Canvas behavior refinement
 
@@ -475,6 +520,8 @@ Current hotspot:
 - [x] update AI prompts for concise card suggestions
 - [x] replace story generation with paragraph aggregation
 - [x] note synthesis into a new card (RightPanel track)
+- [x] clear selected card when clicking empty canvas space
+- [x] update generated empty-card ideas immediately after AI completion
 
 ## Recommended Beta Definition
 

@@ -3,14 +3,15 @@
 ## Table of Contents
 1. [Pre-Deployment Considerations](#pre-deployment-considerations)
 2. [Architecture Overview](#architecture-overview)
-3. [PartyKit Deployment](#partykit-deployment)
-4. [Express Backend Deployment](#express-backend-deployment)
-5. [Frontend Deployment](#frontend-deployment)
-6. [Testing Multiplayer](#testing-multiplayer)
-7. [Environment Configuration](#environment-configuration)
-8. [Monitoring & Debugging](#monitoring--debugging)
-9. [Troubleshooting](#troubleshooting)
-10. [Security Checklist](#security-checklist)
+3. [Firebase Client-Handoff Track](#firebase-client-handoff-track)
+4. [PartyKit Deployment](#partykit-deployment)
+5. [Express Backend Deployment](#express-backend-deployment)
+6. [Frontend Deployment](#frontend-deployment)
+7. [Testing Multiplayer](#testing-multiplayer)
+8. [Environment Configuration](#environment-configuration)
+9. [Monitoring & Debugging](#monitoring--debugging)
+10. [Troubleshooting](#troubleshooting)
+11. [Security Checklist](#security-checklist)
 
 ---
 
@@ -33,6 +34,13 @@
 - Static files after `npm run build`
 - Can host on: Cloudflare Pages, Vercel, Netlify, GitHub Pages
 - Or serve from Express backend (included in current setup)
+
+**Firebase client handoff (recommended next architecture):**
+- Use separate Firebase projects for developer testing and client production
+- Firebase Auth should replace the current shared admin password over time
+- Firestore should replace SQLite/session JSON when moving away from persistent server disk
+- Cloud Storage should replace local attachment files
+- Keep AI calls, document extraction, exports, and privileged role changes server-side
 
 ### 2. Domain & SSL
 
@@ -61,6 +69,33 @@ PartyKit server must accept connections from your domain:
 - Cards stored in `/data/sessions/{sessionId}/`
 - Must persist between deployments
 - Backup strategy: Regular backups of `/data/sessions/` directory
+
+### 5. Netlify Readiness
+
+Netlify is a good fit for the built Vite frontend. The current full app is not Netlify-native as-is because it depends on a long-running Express server, SQLite, and writable local files.
+
+Recommended Netlify path:
+
+1. Host the frontend on Netlify.
+2. Host the current Express backend on Railway, Render, Fly.io, DigitalOcean, or another Node host with persistent storage.
+3. Proxy `/api/*` from Netlify to the backend.
+4. Keep PartyKit deployed separately.
+5. Keep a `firebase.json` hosting config available so the client can later move the same `dist/` build to Firebase Hosting.
+
+Future Netlify-native path:
+
+1. Convert Express routes into Netlify Functions.
+2. Move sessions/cards/connections from SQLite/files to Firestore.
+3. Move attachments from local disk to Firebase Cloud Storage.
+4. Keep AI provider keys available only to Functions/server code.
+
+Client handoff path:
+
+1. Keep Netlify for developer previews and fast GitHub deploys while the project is still in active collaboration.
+2. Keep Firebase production owned by the client from the beginning.
+3. When the client is ready to own hosting too, deploy the same Vite build output to Firebase Hosting.
+4. Replace Netlify redirects with Firebase Hosting rewrites in `firebase.json`.
+5. Move frontend env configuration from Netlify build settings into the client's chosen Firebase/CI deploy flow.
 
 ---
 
@@ -102,6 +137,269 @@ PartyKit server must accept connections from your domain:
                                 │  └────────────────────┘  │
                                 └──────────────────────────┘
 ```
+
+### Firebase Target Architecture
+
+The Firebase handoff architecture should keep product code separated from vendor code:
+
+```
+CLIENT BROWSER
+  React App
+  - Firebase Auth client
+  - Firestore reads/listeners where safe
+  - Cloud Storage uploads where allowed by rules
+  - PartyKit WebSocket client
+  - REST client for privileged AI/export/document operations
+
+SERVER / FUNCTIONS
+  - Firebase Admin SDK
+  - AI provider adapters
+  - Document extraction
+  - Export generation
+  - Role/custom-claim management
+
+FIREBASE
+  - Auth: admin/client identities
+  - Firestore: sessions, cards, connections, attachment metadata
+  - Cloud Storage: uploaded source files
+  - Security Rules: user/session-level access boundaries
+
+PARTYKIT
+  - Live presence
+  - Cursor sync
+  - Realtime canvas event fanout
+```
+
+---
+
+## Firebase Client-Handoff Track
+
+Use this track when preparing the app for a client-owned Firebase production environment while still testing against developer-owned accounts.
+
+### Recommended Project Structure
+
+Create separate Firebase projects:
+
+- `bbp-dev` or `bbp-staging`: owned by the developer/team, used for implementation and QA
+- `bbp-prod`: owned by the client, used for production workshops
+
+Do not share one Firebase project between development and production. Separate projects keep test data, test users, rules experiments, and billing isolated from the client production environment.
+
+### Ownership Model
+
+Recommended handoff flow:
+
+1. Developer creates and tests against `bbp-dev`.
+2. Client creates `bbp-prod` under their Google/Firebase organization.
+3. Client grants developer temporary admin access during launch.
+4. Developer configures production Auth, Firestore, Storage, Rules, and env vars.
+5. Developer imports seed/session data if needed.
+6. Client verifies access with their own admin users.
+7. Developer access is removed or reduced to agreed support access.
+
+### Firebase Products To Enable
+
+Enable these products in both dev and production projects:
+
+- Firebase Authentication
+- Cloud Firestore
+- Cloud Storage for Firebase
+- Firebase Local Emulator Suite for local development
+
+Optional later:
+
+- Firebase App Check
+- Cloud Functions for Firebase, if moving privileged backend routes into Firebase
+- Firebase Hosting, either instead of Netlify or as the final client-owned hosting target
+
+### Environment Variables
+
+Frontend variables use the `VITE_` prefix because they are bundled into the browser app:
+
+```bash
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
+VITE_PARTYKIT_HOST=...
+VITE_PARTYKIT_PARTY=main
+```
+
+Server-only variables must not be exposed to the browser:
+
+```bash
+FIREBASE_PROJECT_ID=...
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY=...
+AI_PROVIDER=opencode
+AI_DEFAULT_MODEL=minimax-m2.5
+GOOGLE_API_KEY=...
+OPENCODE_API_KEY=...
+OPENROUTER_API_KEY=...
+PARTYKIT_HOST=...
+PARTYKIT_ADMIN_SECRET=...
+```
+
+For Netlify, put frontend variables in the build environment and server-only variables in the backend/Functions runtime environment. Do not commit `.env` files.
+
+### Adapter Boundaries
+
+Before swapping storage providers, keep Firebase behind clear seams:
+
+- `src/server/auth/*`: admin/session role resolution
+- `src/server/database/*`: sessions, cards, connections, metadata
+- `src/server/storage/*`: uploaded files and extracted artifacts
+- `src/server/ai/*`: AI provider calls
+
+The current app already has useful seams around AI, sessions, files, and auth context. Preserve that shape so Firebase is an adapter, not a rewrite threaded through UI components.
+
+### Suggested Firestore Model
+
+Use this as the first production-ready data shape:
+
+```text
+sessions/{sessionId}
+  name
+  projectClient
+  projectBackground
+  projectNotes
+  onboardingCompleted
+  passwordRequired
+  ownerOrgId
+  createdAt
+  updatedAt
+
+sessions/{sessionId}/cards/{cardId}
+  section
+  content
+  order
+  starred
+  createdAt
+  updatedAt
+
+sessions/{sessionId}/connections/{connectionId}
+  from
+  to
+  createdAt
+
+sessions/{sessionId}/attachments/{attachmentId}
+  filename
+  storagePath
+  mimeType
+  size
+  status
+  summary
+  extractedText
+  note
+  createdAt
+  updatedAt
+
+admins/{uid}
+  email
+  role
+  createdAt
+```
+
+Store actual uploaded files in Cloud Storage:
+
+```text
+sessions/{sessionId}/attachments/{attachmentId}/{filename}
+```
+
+### Auth And Roles
+
+Recommended first pass:
+
+- Admins sign in with Firebase Auth.
+- Admin authorization is checked through either:
+  - Firebase custom claims, or
+  - an `admins/{uid}` Firestore document.
+- Participants can keep the current session-link/password model during the transition.
+- Later, participants can use anonymous Auth or named accounts if the client needs auditability.
+
+Custom claims are cleaner for rules and UI branching, but they require server/Admin SDK code to set and update roles.
+
+### Security Rules Direction
+
+Do not deploy with broad `allow read, write: if request.auth != null` rules.
+
+Minimum production rules should enforce:
+
+- Only admins can create/delete sessions.
+- Admins can read and write all sessions they manage.
+- Participants can read only sessions they are allowed to access.
+- Card and connection writes require edit permission.
+- Attachment reads/writes are scoped to the session.
+- Storage access checks the matching Firestore session/attachment permission.
+
+Privileged operations should stay server-side:
+
+- AI generation
+- document extraction
+- export ZIP generation
+- custom-claim updates
+- destructive admin operations
+
+### Local Firebase Testing
+
+Use Firebase Emulator Suite for local Firebase work:
+
+```bash
+firebase login
+firebase init emulators
+firebase emulators:start
+```
+
+Recommended emulators:
+
+- Authentication
+- Firestore
+- Storage
+- Functions, if Functions are introduced
+
+Use emulators to test:
+
+- Admin sign-in
+- Firestore reads/writes
+- Storage uploads
+- Security Rules
+- Migration scripts
+
+### Migration Plan From Local Data
+
+Move in stages:
+
+1. Add Firebase config and emulator setup.
+2. Add Firebase Auth for admin sign-in while keeping current admin password as a fallback.
+3. Move attachment files to Cloud Storage and attachment metadata to Firestore.
+4. Move sessions/cards/connections to Firestore.
+5. Replace local SQLite/file reads with database/storage adapters.
+6. Add a one-time import script from `data/sessions` into Firestore/Storage.
+7. Run the import against `bbp-dev`.
+8. Validate app behavior and Security Rules.
+9. Run the import against client-owned `bbp-prod`.
+10. Remove the fallback admin password once Firebase Auth is verified.
+
+### Firebase Handoff Checklist
+
+- [ ] Client owns the production Firebase project
+- [ ] Developer has temporary admin access only as needed
+- [ ] Separate dev/staging Firebase project exists
+- [ ] Firebase Auth enabled
+- [ ] Firestore enabled with production rules
+- [ ] Cloud Storage enabled with production rules
+- [ ] Local Emulator Suite configured
+- [ ] Frontend Firebase env vars configured in hosting provider
+- [ ] Server Firebase Admin credentials configured only in backend/Functions
+- [ ] AI provider keys configured only in backend/Functions
+- [ ] PartyKit host and admin secret configured
+- [ ] Test admin account created for developer QA
+- [ ] Client admin account created and verified
+- [ ] Migration/import dry run completed in dev
+- [ ] Production import completed or seed data intentionally skipped
+- [ ] Developer access removed or reduced after launch
 
 ---
 
@@ -185,9 +483,13 @@ railway init
 **4. Add Environment Variables:**
 ```bash
 railway variables set ADMIN_PASSWORD=shazam!
-railway variables set GEMINI_API_KEY=your_key
+railway variables set AI_PROVIDER=opencode
+railway variables set AI_DEFAULT_MODEL=minimax-m2.5
+railway variables set GOOGLE_API_KEY=your_key
 railway variables set OPENCODE_API_KEY=your_key
+railway variables set OPENROUTER_API_KEY=your_key
 railway variables set PARTYKIT_HOST=beyond-bullet-points.{username}.partykit.dev
+railway variables set PARTYKIT_ADMIN_SECRET=your_secret
 ```
 
 **5. Deploy:**
@@ -216,12 +518,20 @@ services:
         value: production
       - key: ADMIN_PASSWORD
         sync: false
-      - key: GEMINI_API_KEY
+      - key: AI_PROVIDER
+        value: opencode
+      - key: AI_DEFAULT_MODEL
+        value: minimax-m2.5
+      - key: GOOGLE_API_KEY
         sync: false
       - key: OPENCODE_API_KEY
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
       - key: PARTYKIT_HOST
         value: beyond-bullet-points.{username}.partykit.dev
+      - key: PARTYKIT_ADMIN_SECRET
+        sync: false
     disk:
       name: data
       mountPath: /app/data
@@ -298,7 +608,64 @@ npm i -g netlify-cli
 netlify deploy --prod --dir=dist
 ```
 
-**Important:** Update API base URL in frontend if using separate hosting.
+**Recommended `netlify.toml` for frontend-only Netlify hosting:**
+```toml
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://YOUR-BACKEND-DOMAIN.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+```
+
+**Important:** If using separate static hosting, proxy `/api/*` to the backend or configure the frontend API base URL. Keep server-only keys out of Netlify browser builds.
+
+### Option 3: Firebase Hosting Handoff Target
+
+Firebase Hosting can serve the same Vite `dist/` output as Netlify. This is useful when the developer wants Netlify previews during active collaboration, but the client should be able to own hosting later from the same Firebase project they use for Auth, Firestore, and Storage.
+
+Recommended `firebase.json`:
+```json
+{
+  "hosting": {
+    "public": "dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "function": "api"
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
+```
+
+If the backend still runs outside Firebase, replace the `/api/**` function rewrite with the appropriate backend strategy. Firebase Hosting rewrites are where the Netlify `/api/*` proxy behavior gets translated during handoff.
+
+Deploy flow:
+```bash
+npm run build
+firebase deploy --only hosting
+```
+
+Handoff notes:
+
+- Keep both `netlify.toml` and `firebase.json` in the repo once Firebase Hosting is introduced.
+- Use Netlify for developer previews if desired.
+- Use Firebase Hosting for client-owned production when the client is ready.
+- Keep Firebase and API URLs env-driven so moving hosting providers does not require UI code changes.
 
 ---
 
@@ -382,11 +749,30 @@ npm run dev
 ```bash
 # Required
 ADMIN_PASSWORD=shazam!
-GEMINI_API_KEY=your_gemini_api_key
+AI_PROVIDER=opencode
+AI_DEFAULT_MODEL=minimax-m2.5
+GOOGLE_API_KEY=your_google_api_key
 OPENCODE_API_KEY=your_opencode_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 
 # PartyKit (Production)
 PARTYKIT_HOST=beyond-bullet-points.{username}.partykit.dev
+PARTYKIT_ADMIN_SECRET=your_partykit_admin_secret
+VITE_PARTYKIT_HOST=beyond-bullet-points.{username}.partykit.dev
+VITE_PARTYKIT_PARTY=main
+
+# Firebase client config (browser-safe, used by Vite)
+VITE_FIREBASE_API_KEY=your_firebase_web_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+
+# Firebase Admin config (server-only, if Firebase backend adapters are enabled)
+FIREBASE_PROJECT_ID=your_project_id
+FIREBASE_CLIENT_EMAIL=your_service_account_client_email
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 
 # Optional
 DATABASE_PATH=./data/sessions.db
@@ -400,11 +786,24 @@ PORT=3000
 ```bash
 # Required
 ADMIN_PASSWORD=shazam!
-GEMINI_API_KEY=your_gemini_api_key
+AI_PROVIDER=opencode
+AI_DEFAULT_MODEL=minimax-m2.5
+GOOGLE_API_KEY=your_google_api_key
 OPENCODE_API_KEY=your_opencode_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 
 # PartyKit (Development - defaults)
 # PARTYKIT_HOST=localhost:1999
+# VITE_PARTYKIT_HOST=localhost:1999
+# VITE_PARTYKIT_PARTY=main
+
+# Firebase development project or emulator-backed config
+VITE_FIREBASE_API_KEY=your_dev_firebase_web_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_dev_project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_dev_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_dev_project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_dev_sender_id
+VITE_FIREBASE_APP_ID=your_dev_app_id
 
 # Optional
 DATABASE_PATH=./data/sessions.db
@@ -412,6 +811,13 @@ FILE_STORAGE_PATH=./data/sessions
 NODE_ENV=development
 PORT=3000
 ```
+
+### Netlify Environment Notes
+
+- Netlify does not read `.env` files during production builds. Add variables in the Netlify UI or CLI.
+- `VITE_*` variables are embedded into the browser bundle and must not contain secrets.
+- Firebase Admin credentials, AI keys, and PartyKit admin secrets belong in the backend host or Netlify Functions runtime, not in client-side code.
+- If deploying only the frontend on Netlify, configure the backend host separately and proxy `/api/*`.
 
 ---
 
@@ -451,7 +857,7 @@ const logger = winston.createLogger({
 
 **Backend health:**
 ```bash
-curl https://your-domain.com/health
+curl https://your-domain.com/api/health
 ```
 
 **PartyKit health:**
@@ -556,6 +962,10 @@ curl -X POST https://your-domain.com/api/sessions/bdo-test/cards \
 - [ ] Use secure session storage (HttpOnly cookies if possible)
 - [ ] Add input validation for all API endpoints
 - [ ] Sanitize user inputs (prevent XSS)
+- [ ] If using Firebase, deploy restrictive Firestore and Storage Security Rules
+- [ ] If using Firebase, verify admin role checks with custom claims or `admins/{uid}` documents
+- [ ] If using Firebase, test rules in the Emulator Suite before production
+- [ ] If using Firebase, keep service account credentials out of browser builds
 - [ ] Set up logging and monitoring
 - [ ] Configure auto-restart for services
 - [ ] Test disaster recovery (restore from backup)
@@ -626,6 +1036,12 @@ const corsHeaders = {
 **Documentation:**
 - PartyKit Docs: [docs.partykit.io](https://docs.partykit.io)
 - Cloudflare Workers: [developers.cloudflare.com/workers](https://developers.cloudflare.com/workers)
+- Firebase multiple environments: [firebase.google.com/docs/projects/multiprojects](https://firebase.google.com/docs/projects/multiprojects)
+- Firebase Emulator Suite: [firebase.google.com/docs/emulator-suite](https://firebase.google.com/docs/emulator-suite)
+- Firestore Security Rules: [firebase.google.com/docs/firestore/security/get-started](https://firebase.google.com/docs/firestore/security/get-started)
+- Firebase custom claims: [firebase.google.com/docs/auth/admin/custom-claims](https://firebase.google.com/docs/auth/admin/custom-claims)
+- Netlify Functions: [docs.netlify.com/build/functions/overview](https://docs.netlify.com/build/functions/overview)
+- Netlify environment variables: [docs.netlify.com/environment-variables/overview](https://docs.netlify.com/environment-variables/overview)
 
 **Community:**
 - PartyKit Discord: [discord.gg/partykit](https://discord.gg/partykit)
@@ -666,7 +1082,7 @@ npm run partykit:deploy
 **Check status:**
 ```bash
 # Backend
-curl https://your-domain.com/health
+curl https://your-domain.com/api/health
 
 # PartyKit
 curl https://beyond-bullet-points.{username}.partykit.dev/health
@@ -674,5 +1090,5 @@ curl https://beyond-bullet-points.{username}.partykit.dev/health
 
 ---
 
-**Last Updated:** 2026-03-16
-**Version:** 1.0
+**Last Updated:** 2026-04-30
+**Version:** 1.1

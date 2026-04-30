@@ -8,6 +8,8 @@ Beyond Bullet Points is a collaborative storytelling canvas for building present
 - Participants join directly through a session URL like `/bdo-xxxx`.
 - Sessions can be open or password-protected.
 - Admins complete the initial "New Project" onboarding with client, background, and notes.
+- Admins can upload source documents, import extracted summaries or text, and generate a project brief from uploads.
+- Completed canvases can return to the brief for save-only edits or confirmed card regeneration.
 - The canvas organizes ideas into 7 sections:
   - `place`
   - `role`
@@ -17,6 +19,7 @@ Beyond Bullet Points is a collaborative storytelling canvas for building present
   - `change`
   - `story`
 - Cards can be created, edited, reordered, starred, connected, and exported.
+- Canvas chat can use the current session, project overview, and selected-card context.
 - Multiplayer presence, cursors, and live updates run through PartyKit.
 
 ## Tech Stack
@@ -119,9 +122,10 @@ npm run clean
 1. Log in as admin.
 2. Create a session from the dashboard.
 3. Share the generated `/bdo-xxxx` URL with collaborators.
-4. Complete the New Project onboarding if the session is still in setup.
-5. Add and connect cards across the canvas.
-6. Export the session as ZIP, Markdown, or JSON when the story is ready.
+4. Complete the New Project onboarding if the session is still in setup; upload documents and generate or write the project overview brief as needed.
+5. Generate the initial canvas cards, then add and connect cards across the canvas.
+6. Use **Return to brief** as an admin to save overview edits or regenerate cards with confirmation.
+7. Export the session as ZIP, Markdown, or JSON when the story is ready.
 
 ## Multiplayer Notes
 
@@ -136,11 +140,20 @@ The server exposes endpoints for:
 
 - Admin login, logout, auth checks, and PartyKit token minting
 - Session creation, listing, updating, onboarding completion, deletion, and password verification
+- Attachment upload, metadata updates, deletion, and document extraction
 - Card CRUD and card reordering
 - Connection CRUD and bulk save
 - Exporting sessions as ZIP, Markdown, or JSON
 
-## Recent Changes (2025-04-25)
+## Recent Changes
+
+### Project Overview + Canvas Polish (2026-04-29)
+- **Upload-generated brief:** New Project uploads can now be synthesized into a project overview brief through the AI provider seam, using extracted text, summaries, and per-upload source notes.
+- **Brief edit flow:** Admins can save overview changes without generating a canvas, return to the brief from an existing canvas, or regenerate cards behind a destructive confirmation.
+- **Canvas brief panel:** The right panel now shows a collapsible `Project overview [project name]` accordion instead of disconnected hero/challenge labels.
+- **Chat workspace polish:** The chat context block is hidden for now, the composer is more compact, and selected cards appear as small context pills such as `Challenge-2`.
+- **Selection behavior:** Clicking empty canvas space clears the selected card and hides the composer pill.
+- **Generated-card refresh:** AI-generated ideas for empty cards now replace the editing placeholder immediately when generation completes.
 
 ### Role-aware UX (Slice B)
 - **Auth context:** Centralized admin auth state in `src/contexts/AuthContext.tsx`

@@ -15,6 +15,7 @@ export interface ProjectAttachment {
   extractionStatus: "ready" | "unsupported" | "error";
   extractedText: string;
   summary: string;
+  note?: string;
 }
 
 function getPythonExecutable(): string {

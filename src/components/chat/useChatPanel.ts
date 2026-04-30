@@ -131,6 +131,7 @@ export function useChatPanel({ context, selectedModel, onApplyProjectBackgroundD
             name: attachment.name,
             summary: attachment.summary,
             extractedText: attachment.extractedText,
+            note: attachment.note,
           })),
           selectedCard: context.selectedCard
             ? {

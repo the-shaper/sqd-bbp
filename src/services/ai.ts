@@ -1,4 +1,4 @@
-import { CardData } from '../types';
+import { CardData, ProjectAttachment } from '../types';
 
 export type ModelType = string;
 interface ChatGenerationContext {
@@ -10,6 +10,7 @@ interface ChatGenerationContext {
     name: string;
     summary: string;
     extractedText?: string;
+    note?: string;
   }>;
 }
 
@@ -208,6 +209,67 @@ export async function synthesizeNoteIntoCard(
   }
 }
 
+export async function generateBriefFromUploads(
+  client: string,
+  existingBackground: string,
+  notes: string,
+  attachments: ProjectAttachment[],
+  model: ModelType = 'minimax-m2.5'
+): Promise<string> {
+  const sourceContext = attachments
+    .filter((attachment) => attachment.summary.trim() || attachment.extractedText.trim() || attachment.note?.trim())
+    .slice(0, 8)
+    .map((attachment, index) => {
+      const extractedText = attachment.extractedText.trim();
+      const excerpt = extractedText.length > 7000
+        ? `${extractedText.slice(0, 7000)}\n[Excerpt truncated]`
+        : extractedText;
+
+      return `
+Source ${index + 1}: ${attachment.name}
+Status: ${attachment.extractionStatus}
+Summary:
+${attachment.summary || 'No summary available.'}
+${attachment.note ? `Facilitator note:\n${attachment.note}` : ''}
+${excerpt ? `Extracted text excerpt:\n${excerpt}` : ''}
+      `.trim();
+    })
+    .join('\n\n---\n\n');
+
+  const prompt = `
+    You are an expert presentation strategist using the "Beyond Bulletpoints" methodology.
+    Analyze the uploaded source material and write a clean Project Overview / brief that can be pasted directly into the app's Project Overview field.
+
+    Client / project name: ${client || 'Unknown client'}
+    Existing Project Overview, if any:
+    ${existingBackground || 'None yet.'}
+
+    Additional notes from facilitator:
+    ${notes || 'None.'}
+
+    Uploaded source material:
+    ${sourceContext || 'No usable uploaded source material was provided.'}
+
+    Requirements:
+    - Return only the project overview text.
+    - Synthesize the documents; do not list files one by one.
+    - Preserve important client context, goals, current needs, challenges, stakeholders, constraints, and success outcomes when present.
+    - Use clear business language a facilitator can review and edit.
+    - Do not invent facts not supported by the source material.
+    - If there is an existing overview, improve and integrate it instead of ignoring it.
+    - Keep it concise but useful, around 3-6 short paragraphs.
+    - Do not use markdown headings, bullets, labels, or quoted wrappers.
+  `;
+
+  try {
+    const responseText = await requestTextCompletion(prompt, model);
+    return responseText.trim() || 'Generated project overview';
+  } catch (error) {
+    console.error('Error generating brief from uploads:', error);
+    throw error;
+  }
+}
+
 export async function generateTransformationStory(client: string, background: string, notes: string, chainText: string, model: ModelType = 'minimax-m2.5'): Promise<string> {
   const prompt = `
     You are an expert presentation strategist using the "Beyond Bulletpoints" methodology.
@@ -249,7 +311,7 @@ export async function generateChatResponse(client: string, background: string, n
     - Selected Card: ${context?.selectedCard ? `${context.selectedCard.section} :: ${context.selectedCard.content}` : 'none'}
     - Uploaded context sources:
 ${(context?.attachments && context.attachments.length > 0)
-  ? context.attachments.map((attachment) => `      * ${attachment.name}: ${attachment.summary}`).join('\n')
+  ? context.attachments.map((attachment) => `      * ${attachment.name}: ${attachment.summary}${attachment.note ? `\n        Note: ${attachment.note}` : ''}`).join('\n')
   : '      * none'}
 
     Behavior rules:

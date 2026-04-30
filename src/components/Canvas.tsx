@@ -11,7 +11,7 @@ import { generateSingleIdea, ModelType } from '../services/ai';
 import type { TutorialItem } from '../tutorials';
 
 interface CanvasProps {
-  onSelectCard: (id: string) => void;
+  onSelectCard: (id: string | null) => void;
   selectedCard: string | null;
   cards: CardData[];
   setCards: React.Dispatch<React.SetStateAction<CardData[]>>;
@@ -450,7 +450,16 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     setGeneratingCards(prev => ({ ...prev, [cardId]: true }));
     try {
       const idea = await generateSingleIdea(projectData.client, projectData.background, projectData.notes, colId, selectedModel);
-      handleUpdateCard(cardId, idea);
+      setEditContent(idea);
+      setCards(prev => prev.map(card => card.id === cardId ? { ...card, content: idea } : card));
+      setEditingCardId(null);
+
+      if (onCardUpdate) {
+        onCardUpdate(cardId, { content: idea }).catch((error) => {
+          console.error('Error updating card:', error);
+          showToast('Generated idea, but failed to save it');
+        });
+      }
     } catch (e: any) {
       console.error(e);
       if (e?.message?.includes('429') || e?.message?.includes('quota') || e?.status === 429) {
@@ -584,6 +593,21 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     }
   };
 
+  const handleCanvasClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (
+      target.closest('[data-card-id]') ||
+      target.closest('[id^="node-"]') ||
+      target.closest('button') ||
+      target.closest('textarea') ||
+      target.closest('input')
+    ) {
+      return;
+    }
+
+    onSelectCard(null);
+  };
+
   // Handle delete card with confirmation
   const handleDeleteCard = useCallback(async (cardId: string) => {
     if (!isEditMode) {
@@ -625,7 +649,7 @@ export default function Canvas({ onSelectCard, selectedCard, cards, setCards, pr
     .join('|');
 
   return (
-    <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]" onMouseMove={handleMouseMove}>
+    <div id="canvas-container" className="h-full w-full relative bg-[#f5f5f5]" onMouseMove={handleMouseMove} onClick={handleCanvasClick}>
       <InfiniteCanvas
         pan={pan}
         scale={scale}

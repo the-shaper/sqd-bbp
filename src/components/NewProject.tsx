@@ -1,18 +1,27 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { UploadCloud, Save, Loader2, FileText, Image as ImageIcon, Pencil, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { UploadCloud, Save, Loader2, FileText, Image as ImageIcon, Pencil, Trash2, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, CircleDashed, Sparkles } from 'lucide-react';
 import type { ProjectAttachment } from '../types';
 
 interface NewProjectProps {
   projectName: string;
   onRenameProject: (name: string) => Promise<void>;
   onStart: () => void;
+  onSaveChanges: () => Promise<void>;
+  onRegenerateCards?: () => Promise<void>;
   projectData: { client: string; background: string; notes: string };
   setProjectData: React.Dispatch<React.SetStateAction<{ client: string; background: string; notes: string }>>;
   isGenerating: boolean;
+  isSavingProjectChanges: boolean;
+  isRegeneratingCards?: boolean;
+  showGenerateCanvasButton?: boolean;
+  showRegenerateCardsButton?: boolean;
   attachments: ProjectAttachment[];
   isUploadingAttachments: boolean;
+  isGeneratingBriefFromUploads: boolean;
   onUploadFiles: (files: FileList | null) => void;
-  onUseAttachmentText: (attachment: ProjectAttachment, target: 'background' | 'notes') => void;
+  onGenerateBriefFromUploads: () => Promise<void>;
+  onUseAttachmentText: (attachment: ProjectAttachment, target: 'background' | 'notes', source: 'summary' | 'full') => void;
+  onUpdateAttachmentNote: (attachmentId: string, note: string) => Promise<void>;
   onDeleteAttachment: (attachmentId: string) => Promise<void>;
 }
 
@@ -20,21 +29,35 @@ export default function NewProject({
   projectName,
   onRenameProject,
   onStart,
+  onSaveChanges,
+  onRegenerateCards,
   projectData,
   setProjectData,
   isGenerating,
+  isSavingProjectChanges,
+  isRegeneratingCards = false,
+  showGenerateCanvasButton = true,
+  showRegenerateCardsButton = false,
   attachments,
   isUploadingAttachments,
+  isGeneratingBriefFromUploads,
   onUploadFiles,
+  onGenerateBriefFromUploads,
   onUseAttachmentText,
+  onUpdateAttachmentNote,
   onDeleteAttachment,
 }: NewProjectProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState(projectName);
   const [expandedAttachments, setExpandedAttachments] = useState<Record<string, boolean>>({});
+  const [attachmentNoteDrafts, setAttachmentNoteDrafts] = useState<Record<string, string>>({});
+  const [savingAttachmentNoteId, setSavingAttachmentNoteId] = useState<string | null>(null);
 
   const sortedAttachments = useMemo(() => attachments, [attachments]);
+  const hasUsableUploads = sortedAttachments.some((attachment) =>
+    attachment.summary.trim() || attachment.extractedText.trim() || attachment.note?.trim()
+  );
 
   const handleProjectNameSave = async () => {
     const trimmed = projectNameDraft.trim();
@@ -48,8 +71,49 @@ export default function NewProject({
     setIsEditingProjectName(false);
   };
 
+  const getStatusMeta = (status: ProjectAttachment['extractionStatus']) => {
+    if (status === 'ready') {
+      return {
+        icon: <CheckCircle2 size={14} />,
+        label: 'Ready',
+        className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      };
+    }
+
+    if (status === 'error') {
+      return {
+        icon: <AlertTriangle size={14} />,
+        label: 'Extraction failed',
+        className: 'bg-red-50 text-red-700 border-red-200',
+      };
+    }
+
+    return {
+      icon: <CircleDashed size={14} />,
+      label: 'Stored only',
+      className: 'bg-gray-50 text-gray-600 border-gray-200',
+    };
+  };
+
+  const getAttachmentNoteDraft = (attachment: ProjectAttachment) => {
+    return attachmentNoteDrafts[attachment.id] ?? attachment.note ?? '';
+  };
+
+  const handleAttachmentNoteBlur = async (attachment: ProjectAttachment) => {
+    const nextNote = getAttachmentNoteDraft(attachment);
+    if ((attachment.note || '') === nextNote) return;
+
+    setSavingAttachmentNoteId(attachment.id);
+    try {
+      await onUpdateAttachmentNote(attachment.id, nextNote);
+    } finally {
+      setSavingAttachmentNoteId(null);
+    }
+  };
+
   return (
-    <div className="h-full overflow-auto max-w-6xl mx-auto p-12">
+    <div className="h-full flex-1 overflow-auto">
+      <div className="max-w-6xl mx-auto p-12">
       <div className="mb-14">
         {isEditingProjectName ? (
           <div className="flex items-center gap-3">
@@ -103,6 +167,21 @@ export default function NewProject({
         >
           Upload Docs <UploadCloud size={22} />
         </button>
+        <button
+          disabled={isGenerating || isUploadingAttachments || isGeneratingBriefFromUploads || !hasUsableUploads}
+          onClick={onGenerateBriefFromUploads}
+          className="mt-3 w-full flex items-center justify-center gap-3 px-6 py-4 border border-black rounded-none bg-black text-white hover:bg-gray-900 font-semibold text-base transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isGeneratingBriefFromUploads ? (
+            <>
+              Generating brief <Loader2 size={20} className="animate-spin" />
+            </>
+          ) : (
+            <>
+              Generate brief from uploads <Sparkles size={20} />
+            </>
+          )}
+        </button>
         </div>
         <div className="self-stretch w-px bg-gray-300" />
         <div>
@@ -116,6 +195,7 @@ export default function NewProject({
               sortedAttachments.map((attachment) => {
                 const isImage = attachment.mimeType.startsWith('image/');
                 const expanded = !!expandedAttachments[attachment.id];
+                const statusMeta = getStatusMeta(attachment.extractionStatus);
 
                 return (
                   <div key={attachment.id} className="border-b border-gray-200 pb-2">
@@ -142,28 +222,79 @@ export default function NewProject({
                     </div>
                     {expanded && (
                       <div className="mt-3 ml-9 rounded-lg bg-gray-50 border border-gray-200 p-4">
-                        <div className="text-sm text-gray-500 mb-2 capitalize">
-                          {attachment.extractionStatus} • {(attachment.size / 1024).toFixed(1)} KB
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-medium ${statusMeta.className}`}>
+                            {statusMeta.icon}
+                            {statusMeta.label}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {(attachment.size / 1024).toFixed(1)} KB
+                          </div>
                         </div>
-                        <div className="text-sm text-gray-700 whitespace-pre-wrap mb-3">
+                        <div className="mb-4 text-sm text-gray-700 whitespace-pre-wrap">
                           {attachment.summary}
                         </div>
                         {attachment.extractedText && (
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => onUseAttachmentText(attachment, 'background')}
-                              className="px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100"
-                            >
-                              Use in overview
-                            </button>
-                            <button
-                              onClick={() => onUseAttachmentText(attachment, 'notes')}
-                              className="px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200"
-                            >
-                              Add to notes
-                            </button>
+                          <details className="mb-4 rounded-md border border-gray-200 bg-white">
+                            <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-gray-700">
+                              Preview extracted text
+                            </summary>
+                            <div className="max-h-48 overflow-auto border-t border-gray-100 p-3 text-xs leading-5 text-gray-600 whitespace-pre-wrap custom-scrollbar">
+                              {attachment.extractedText}
+                            </div>
+                          </details>
+                        )}
+                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Source note
+                        </label>
+                        <textarea
+                          value={getAttachmentNoteDraft(attachment)}
+                          onChange={(e) =>
+                            setAttachmentNoteDrafts((prev) => ({
+                              ...prev,
+                              [attachment.id]: e.target.value,
+                            }))
+                          }
+                          onBlur={() => handleAttachmentNoteBlur(attachment)}
+                          className="mb-3 h-20 w-full resize-none rounded-md border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                          placeholder="Add why this source matters, which parts to trust, or what to look for..."
+                        />
+                        {savingAttachmentNoteId === attachment.id && (
+                          <div className="mb-3 flex items-center gap-2 text-xs text-gray-500">
+                            <Loader2 size={12} className="animate-spin" />
+                            Saving source note
                           </div>
                         )}
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => onUseAttachmentText(attachment, 'background', 'summary')}
+                            className="px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100"
+                          >
+                            Add summary to overview
+                          </button>
+                          {attachment.extractedText && (
+                            <button
+                              onClick={() => onUseAttachmentText(attachment, 'background', 'full')}
+                              className="px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100"
+                            >
+                              Add full text to overview
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onUseAttachmentText(attachment, 'notes', 'summary')}
+                            className="px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200"
+                          >
+                            Add summary to notes
+                          </button>
+                          {attachment.extractedText && (
+                            <button
+                              onClick={() => onUseAttachmentText(attachment, 'notes', 'full')}
+                              className="px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200"
+                            >
+                              Add full text to notes
+                            </button>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -189,17 +320,43 @@ export default function NewProject({
           placeholder={`No brief? please describe the project here with as much detail as possible\n\nOR\n\nUse the AI assistant on the right to help write a Project Overview`}
           disabled={isGenerating}
         ></textarea>
-        <button 
-          onClick={onStart}
-          disabled={isGenerating}
-          className="w-full mt-6 py-4 bg-black text-white hover:bg-gray-900 border border-black rounded-none font-bold flex items-center justify-center gap-3 text-lg transition-colors disabled:opacity-70"
+        <button
+          onClick={onSaveChanges}
+          disabled={isGenerating || isSavingProjectChanges || isRegeneratingCards}
+          className="w-full mt-6 py-4 bg-white text-gray-900 hover:bg-gray-50 border border-gray-300 rounded-none font-bold flex items-center justify-center gap-3 text-lg transition-colors disabled:opacity-70"
         >
-          {isGenerating ? (
-            <>Generating Act I Ideas <Loader2 size={20} className="animate-spin" /></>
+          {isSavingProjectChanges ? (
+            <>Saving changes <Loader2 size={20} className="animate-spin" /></>
           ) : (
-            <>Save & Generate Canvas <Save size={20} /></>
+            <>Save changes <Save size={20} /></>
           )}
         </button>
+        {showGenerateCanvasButton && (
+          <button
+            onClick={onStart}
+            disabled={isGenerating || isSavingProjectChanges || isRegeneratingCards}
+            className="w-full mt-3 py-4 bg-black text-white hover:bg-gray-900 border border-black rounded-none font-bold flex items-center justify-center gap-3 text-lg transition-colors disabled:opacity-70"
+          >
+            {isGenerating ? (
+              <>Generating Act I Ideas <Loader2 size={20} className="animate-spin" /></>
+            ) : (
+              <>Save & Generate Canvas <Save size={20} /></>
+            )}
+          </button>
+        )}
+        {showRegenerateCardsButton && onRegenerateCards && (
+          <button
+            onClick={onRegenerateCards}
+            disabled={isGenerating || isSavingProjectChanges || isRegeneratingCards}
+            className="w-full mt-3 py-4 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 rounded-none font-bold flex items-center justify-center gap-3 text-lg transition-colors disabled:opacity-70"
+          >
+            {isRegeneratingCards ? (
+              <>Regenerating cards <Loader2 size={20} className="animate-spin" /></>
+            ) : (
+              <>Save changes and regenerate cards <Save size={20} /></>
+            )}
+          </button>
+        )}
       </div>
 
       <div className="mt-10">
@@ -211,6 +368,7 @@ export default function NewProject({
           placeholder="Type description or add more details"
           disabled={isGenerating}
         ></textarea>
+      </div>
       </div>
     </div>
   );
